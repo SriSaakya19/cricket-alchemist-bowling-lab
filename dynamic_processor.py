@@ -2,6 +2,8 @@
 import cv2
 import numpy as np
 import pandas as pd
+import tempfile
+import os
 
 try:
     import mediapipe as mp
@@ -38,23 +40,41 @@ def calculate_angle(point_a, point_b, point_c):
 
 
 def analyze_video(video_path, stride=2, max_frames=240):
-    """Sample video frames and return pose overlays and measurements."""
+    """
+    Analyze a cricket bowling video using MediaPipe Pose.
+
+    Returns:
+        data: DataFrame containing pose measurements.
+        overlay_frames: RGB frames for still-image display.
+        overlay_video_path: Path to the generated skeleton MP4.
+        fps: Original video FPS.
+        sampled_frames: Number of processed frames.
+        pose_detection_pct: Percentage of frames with detected poses.
+    """
 
     stride = int(stride)
     max_frames = int(max_frames)
 
     if stride < 1:
-        raise ProcessorError("Frame sampling stride must be at least 1.")
+        raise ProcessorError(
+            "Frame sampling stride must be at least 1."
+        )
 
     if max_frames < 1:
-        raise ProcessorError("Maximum frame count must be at least 1.")
+        raise ProcessorError(
+            "Maximum frame count must be at least 1."
+        )
+
+    if not os.path.isfile(video_path):
+        raise ProcessorError(
+            "The uploaded video file could not be found."
+        )
 
     capture = cv2.VideoCapture(video_path)
 
     if not capture.isOpened():
         raise ProcessorError(
-            "Could not open the video. Export it as an H.264 MP4 "
-            "and try again."
+            "Could not open the video. Please try an H.264 MP4 video."
         )
 
     fps = capture.get(cv2.CAP_PROP_FPS)
@@ -82,11 +102,30 @@ def analyze_video(video_path, stride=2, max_frames=240):
                 min_detection_confidence=0.5,
                 min_tracking_confidence=0.5,
             )
-        except Exception:
-            pose_model = None
+        except Exception as exc:
+            capture.release()
+            raise ProcessorError(
+                f"Could not initialize MediaPipe Pose: {exc}"
+            ) from exc
+    else:
+        capture.release()
+        raise ProcessorError(
+            "MediaPipe is unavailable. Check your installed dependencies."
+        )
 
     output_rows = []
     overlay_frames = []
+
+    # Create a temporary MP4 output file.
+    temp_file = tempfile.NamedTemporaryFile(
+        suffix=".mp4",
+        delete=False
+    )
+    overlay_video_path = temp_file.name
+    temp_file.close()
+
+    video_writer = None
+    output_fps = max(fps / stride, 1.0)
 
     frame_index = 0
     sampled_count = 0
@@ -101,6 +140,7 @@ def analyze_video(video_path, stride=2, max_frames=240):
             current_index = frame_index
             frame_index += 1
 
+            # Process every Nth frame.
             if current_index % stride != 0:
                 continue
 
@@ -118,161 +158,159 @@ def analyze_video(video_path, stride=2, max_frames=240):
                 "hip_angle_deg": np.nan,
             }
 
-            if pose_model is not None:
-                try:
-                    rgb_frame = cv2.cvtColor(
-                        frame, cv2.COLOR_BGR2RGB
+            try:
+                rgb_frame = cv2.cvtColor(
+                    frame,
+                    cv2.COLOR_BGR2RGB
+                )
+
+                result = pose_model.process(rgb_frame)
+
+                if result.pose_landmarks:
+                    detected = True
+                    landmarks = result.pose_landmarks.landmark
+
+                    visible_count = sum(
+                        1
+                        for landmark in landmarks
+                        if landmark.visibility >= 0.5
                     )
 
-                    result = pose_model.process(rgb_frame)
+                    # Draw the skeleton on the video frame.
+                    mp.solutions.drawing_utils.draw_landmarks(
+                        overlay,
+                        result.pose_landmarks,
+                        mp.solutions.pose.POSE_CONNECTIONS,
+                        landmark_drawing_spec=(
+                            mp.solutions.drawing_utils.DrawingSpec(
+                                color=(70, 225, 255),
+                                thickness=2,
+                                circle_radius=3,
+                            )
+                        ),
+                        connection_drawing_spec=(
+                            mp.solutions.drawing_utils.DrawingSpec(
+                                color=(255, 193, 76),
+                                thickness=2,
+                                circle_radius=2,
+                            )
+                        ),
+                    )
 
-                    if result.pose_landmarks:
-                        detected = True
-                        landmarks = result.pose_landmarks.landmark
-
-                        visible_count = sum(
-                            1
-                            for landmark in landmarks
-                            if landmark.visibility >= 0.5
+                    def point_xy(index):
+                        landmark = landmarks[index]
+                        return (
+                            landmark.x * frame_width,
+                            landmark.y * frame_height,
                         )
 
-                        # Draw skeleton over the original video frame.
-                        mp.solutions.drawing_utils.draw_landmarks(
-                            overlay,
-                            result.pose_landmarks,
-                            mp.solutions.pose.POSE_CONNECTIONS,
-                            landmark_drawing_spec=(
-                                mp.solutions.drawing_utils.DrawingSpec(
-                                    color=(70, 225, 255),
-                                    thickness=2,
-                                    circle_radius=3,
-                                )
-                            ),
-                            connection_drawing_spec=(
-                                mp.solutions.drawing_utils.DrawingSpec(
-                                    color=(255, 193, 76),
-                                    thickness=2,
-                                    circle_radius=2,
-                                )
-                            ),
+                    def is_visible(index):
+                        return (
+                            landmarks[index].visibility >= 0.5
                         )
 
-                        def point_xy(index):
-                            landmark = landmarks[index]
-                            return (
-                                landmark.x * frame_width,
-                                landmark.y * frame_height,
-                            )
+                    # Select the more visible bowling-arm side.
+                    right_score = sum(
+                        is_visible(i)
+                        for i in (12, 14, 16, 20)
+                    )
 
-                        def is_visible(index):
-                            return landmarks[index].visibility >= 0.5
+                    left_score = sum(
+                        is_visible(i)
+                        for i in (11, 13, 15, 19)
+                    )
 
-                        # MediaPipe landmark indices:
-                        # Left: shoulder 11, elbow 13, wrist 15, index 19
-                        # Right: shoulder 12, elbow 14, wrist 16, index 20
-                        right_score = sum(
-                            is_visible(i)
-                            for i in (12, 14, 16, 20)
+                    if right_score >= left_score:
+                        shoulder, elbow, wrist, finger = (
+                            12, 14, 16, 20
+                        )
+                    else:
+                        shoulder, elbow, wrist, finger = (
+                            11, 13, 15, 19
                         )
 
-                        left_score = sum(
-                            is_visible(i)
-                            for i in (11, 13, 15, 19)
+                    # Wrist angle: elbow-wrist-index finger.
+                    if all(
+                        is_visible(i)
+                        for i in (elbow, wrist, finger)
+                    ):
+                        angles["wrist_angle_deg"] = calculate_angle(
+                            point_xy(elbow),
+                            point_xy(wrist),
+                            point_xy(finger),
                         )
 
-                        if right_score >= left_score:
-                            shoulder, elbow, wrist, finger = (
-                                12, 14, 16, 20
-                            )
-                        else:
-                            shoulder, elbow, wrist, finger = (
-                                11, 13, 15, 19
-                            )
+                    # Elbow angle.
+                    if all(
+                        is_visible(i)
+                        for i in (shoulder, elbow, wrist)
+                    ):
+                        angles["elbow_angle_deg"] = calculate_angle(
+                            point_xy(shoulder),
+                            point_xy(elbow),
+                            point_xy(wrist),
+                        )
 
-                        # Wrist angle: elbow-wrist-index-finger.
-                        # This is an image-plane estimate, not a validated
-                        # clinical or biomechanical wrist measurement.
-                        if all(
-                            is_visible(i)
-                            for i in (elbow, wrist, finger)
-                        ):
-                            angles["wrist_angle_deg"] = calculate_angle(
-                                point_xy(elbow),
-                                point_xy(wrist),
-                                point_xy(finger),
-                            )
+                    # Shoulder / torso image-plane angle indicator.
+                    if all(
+                        is_visible(i)
+                        for i in (11, 12, 24)
+                    ):
+                        angles["shoulder_angle_deg"] = calculate_angle(
+                            point_xy(11),
+                            point_xy(12),
+                            point_xy(24),
+                        )
 
-                        # Elbow angle.
-                        if all(
-                            is_visible(i)
-                            for i in (shoulder, elbow, wrist)
-                        ):
-                            angles["elbow_angle_deg"] = calculate_angle(
-                                point_xy(shoulder),
-                                point_xy(elbow),
-                                point_xy(wrist),
-                            )
+                    # Knee angle.
+                    if all(
+                        is_visible(i)
+                        for i in (23, 25, 27)
+                    ):
+                        angles["knee_angle_deg"] = calculate_angle(
+                            point_xy(23),
+                            point_xy(25),
+                            point_xy(27),
+                        )
+                    elif all(
+                        is_visible(i)
+                        for i in (24, 26, 28)
+                    ):
+                        angles["knee_angle_deg"] = calculate_angle(
+                            point_xy(24),
+                            point_xy(26),
+                            point_xy(28),
+                        )
 
-                        # Shoulder/torso image-plane angle indicator.
-                        if all(
-                            is_visible(i)
-                            for i in (11, 12, 24)
-                        ):
-                            angles["shoulder_angle_deg"] = calculate_angle(
-                                point_xy(11),
-                                point_xy(12),
-                                point_xy(24),
-                            )
+                    # Hip angle indicator.
+                    if all(
+                        is_visible(i)
+                        for i in (11, 23, 25)
+                    ):
+                        angles["hip_angle_deg"] = calculate_angle(
+                            point_xy(11),
+                            point_xy(23),
+                            point_xy(25),
+                        )
+                    elif all(
+                        is_visible(i)
+                        for i in (12, 24, 26)
+                    ):
+                        angles["hip_angle_deg"] = calculate_angle(
+                            point_xy(12),
+                            point_xy(24),
+                            point_xy(26),
+                        )
 
-                        # Knee angle: choose the side with visible landmarks.
-                        if all(
-                            is_visible(i)
-                            for i in (23, 25, 27)
-                        ):
-                            angles["knee_angle_deg"] = calculate_angle(
-                                point_xy(23),
-                                point_xy(25),
-                                point_xy(27),
-                            )
-                        elif all(
-                            is_visible(i)
-                            for i in (24, 26, 28)
-                        ):
-                            angles["knee_angle_deg"] = calculate_angle(
-                                point_xy(24),
-                                point_xy(26),
-                                point_xy(28),
-                            )
-
-                        # Hip angle indicator.
-                        if all(
-                            is_visible(i)
-                            for i in (11, 23, 25)
-                        ):
-                            angles["hip_angle_deg"] = calculate_angle(
-                                point_xy(11),
-                                point_xy(23),
-                                point_xy(25),
-                            )
-                        elif all(
-                            is_visible(i)
-                            for i in (12, 24, 26)
-                        ):
-                            angles["hip_angle_deg"] = calculate_angle(
-                                point_xy(12),
-                                point_xy(24),
-                                point_xy(26),
-                            )
-
-                except Exception:
-                    # Continue processing even if one frame fails.
-                    detected = False
+            except Exception:
+                # Continue even if pose detection fails on one frame.
+                detected = False
 
             if not detected:
                 message = (
-                    "MEDIAPIPE UNAVAILABLE"
-                    if pose_model is None
-                    else "POSE NOT DETECTED"
+                    "POSE NOT DETECTED"
+                    if pose_model is not None
+                    else "MEDIAPIPE UNAVAILABLE"
                 )
 
                 cv2.putText(
@@ -286,7 +324,7 @@ def analyze_video(video_path, stride=2, max_frames=240):
                     cv2.LINE_AA,
                 )
 
-            # Resize overlays to reduce memory usage.
+            # Resize large frames to reduce memory usage.
             if overlay.shape[1] > 960:
                 scale = 960 / overlay.shape[1]
 
@@ -299,9 +337,34 @@ def analyze_video(video_path, stride=2, max_frames=240):
                     interpolation=cv2.INTER_AREA,
                 )
 
+            # Initialize the MP4 writer from the first processed frame.
+            if video_writer is None:
+                output_height, output_width = overlay.shape[:2]
+
+                fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+
+                video_writer = cv2.VideoWriter(
+                    overlay_video_path,
+                    fourcc,
+                    output_fps,
+                    (output_width, output_height),
+                )
+
+                if not video_writer.isOpened():
+                    video_writer.release()
+                    video_writer = None
+                    raise ProcessorError(
+                        "Could not create the skeleton MP4 video."
+                    )
+
+            # Write every processed frame to the output video.
+            video_writer.write(overlay)
+
             row = {
                 "frame": current_index,
-                "time_seconds": round(current_index / fps, 3),
+                "time_seconds": round(
+                    current_index / fps, 3
+                ),
                 "pose_detected": bool(detected),
                 "visible_landmarks": int(visible_count),
                 "wrist_angle_deg": angles["wrist_angle_deg"],
@@ -314,7 +377,8 @@ def analyze_video(video_path, stride=2, max_frames=240):
             output_rows.append(row)
 
             overlay_rgb = cv2.cvtColor(
-                overlay, cv2.COLOR_BGR2RGB
+                overlay,
+                cv2.COLOR_BGR2RGB
             )
 
             overlay_frames.append(overlay_rgb)
@@ -323,6 +387,9 @@ def analyze_video(video_path, stride=2, max_frames=240):
     finally:
         capture.release()
 
+        if video_writer is not None:
+            video_writer.release()
+
         if pose_model is not None:
             try:
                 pose_model.close()
@@ -330,13 +397,24 @@ def analyze_video(video_path, stride=2, max_frames=240):
                 pass
 
     if not output_rows:
+        if os.path.exists(overlay_video_path):
+            os.remove(overlay_video_path)
+
         raise ProcessorError(
             "No readable video frames were found."
         )
 
+    # Verify that the output video is readable.
+    if (
+        not os.path.exists(overlay_video_path)
+        or os.path.getsize(overlay_video_path) == 0
+    ):
+        raise ProcessorError(
+            "The skeleton video file was not generated correctly."
+        )
+
     data = pd.DataFrame(output_rows)
 
-    # Guarantee all expected columns exist, even if no pose was detected.
     required_columns = [
         "frame",
         "time_seconds",
@@ -362,6 +440,7 @@ def analyze_video(video_path, stride=2, max_frames=240):
     return {
         "data": data,
         "overlay_frames": overlay_frames,
+        "overlay_video_path": overlay_video_path,
         "fps": float(fps),
         "width": width,
         "height": height,
