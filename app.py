@@ -1,496 +1,870 @@
-
-from __future__ import annotations
-
 import hashlib
-import tempfile
-from pathlib import Path
+import html
 
-import numpy as np
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 
 from dynamic_processor import (
-    ANGLE_COLUMNS,
-    FFmpegError,
-    VideoProcessingError,
-    analyze_video,
-    convert_to_browser_mp4,
-    get_video_info,
+    SUPPORTED_EXTENSIONS,
+    FFmpegNotFoundError,
+    ProcessorError,
+    analyze_video_bytes,
+    convert_uploaded_video,
+    find_ffmpeg,
 )
 
+# -------------------- PAGE CONFIG --------------------
 
 st.set_page_config(
-    page_title="Cricket Alchemist | Bowling Lab",
+    page_title="The Cricket Alchemist | Bowling Lab",
     page_icon="🏏",
     layout="wide",
+    initial_sidebar_state="collapsed",
 )
 
-SUPPORTED_EXTENSIONS = [
-    "mp4", "mov", "avi", "m4v", "mkv", "webm"
-]
+# -------------------- PREMIUM UI --------------------
 
 st.markdown(
     """
-    <style>
-    .stApp {
-        background: linear-gradient(135deg, #070B14, #101827);
-        color: #F8FAFC;
-    }
-    [data-testid="stSidebar"] {
-        background: #0B1220;
-    }
-    .ca-title {
-        color: #D4AF37;
-        font-size: clamp(28px, 4vw, 42px);
-        font-weight: 850;
-        letter-spacing: 1px;
-        margin-bottom: 0;
-    }
-    .ca-subtitle {
-        color: #FFFFFF;
-        font-size: 15px;
-        margin-top: 4px;
-    }
-    .ca-card {
-        background: rgba(18, 28, 45, 0.92);
-        border: 1px solid rgba(212, 175, 55, 0.4);
-        border-radius: 14px;
-        padding: 18px;
-        margin: 8px 0 14px 0;
-    }
-    .ca-card h3 {
-        color: #D4AF37;
-        margin-top: 0;
-    }
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700;800;900&family=DM+Sans:wght@400;500;600;700&display=swap');
 
-    /* Metric labels: bright, bold, readable */
-    [data-testid="stMetricLabel"],
-    [data-testid="stMetricLabel"] p,
-    [data-testid="stMetricLabel"] label,
-    [data-testid="stMetricLabel"] div,
-    [data-testid="stMetricLabel"] span {
-        color: #FFFFFF !important;
-        font-size: 0.95rem !important;
-        font-weight: 800 !important;
-        opacity: 1 !important;
-        visibility: visible !important;
-    }
-    [data-testid="stMetricValue"],
-    [data-testid="stMetricValue"] div,
-    [data-testid="stMetricValue"] p {
-        color: #D4AF37 !important;
-        font-size: 1.65rem !important;
-        font-weight: 850 !important;
-        opacity: 1 !important;
-    }
-    h1, h2, h3 {
-        color: #F8FAFC;
-    }
-    </style>
-    """,
+.stApp {
+background: radial-gradient(
+ellipse at 70% 0%,
+#173653 0%, #071322 48%, #030711 100%
+);
+color: #F5F8FF;
+}
+
+.block-container {
+max-width: 1600px;
+padding: 1.4rem 2rem 3rem;
+}
+
+header[data-testid="stHeader"] {
+background: transparent;
+}
+
+section[data-testid="stSidebar"] {
+display: none;
+}
+
+.hero {
+padding: 2.2rem;
+border: 1px solid #345777;
+border-radius: 24px;
+background: linear-gradient(
+120deg, #142D47, #071322 75%, #17243B
+);
+box-shadow: 0 12px 45px #0007;
+}
+
+.kicker {
+color: #FFD16D;
+letter-spacing: .19em;
+font-size: .82rem;
+font-weight: 800;
+}
+
+.hero h1 {
+font-family: 'Barlow Condensed', sans-serif;
+font-size: clamp(3rem, 7vw, 6rem);
+line-height: .9;
+font-weight: 900;
+margin: .65rem 0 1rem;
+color: #FFFFFF;
+}
+
+.gold {
+color: #FFD16D;
+}
+
+.hero p {
+color: #E0EAF7;
+font-size: 1.05rem;
+line-height: 1.75;
+max-width: 950px;
+}
+
+.brand {
+color: #D4E0F1;
+margin-top: 1.3rem;
+font-size: .85rem;
+letter-spacing: .06em;
+}
+
+/* SECTION HEADINGS */
+.section-title {
+font-family: 'Barlow Condensed', sans-serif;
+font-size: 2.5rem !important;
+font-weight: 900 !important;
+color: #FFFFFF !important;
+margin: 1.1rem 0 .2rem;
+line-height: 1.2;
+opacity: 1 !important;
+text-shadow: 0 1px 3px rgba(0, 0, 0, .45);
+}
+
+.muted {
+color: #C2D0E2;
+}
+
+/* FEATURE AND CONTENT BOXES */
+.panel {
+background: linear-gradient(145deg, #10243A, #091524);
+border: 1px solid #294968;
+border-radius: 17px;
+padding: 1.1rem;
+min-height: 145px;
+}
+
+.panel ul {
+margin: .4rem 0 .8rem 1.1rem;
+padding: 0;
+color: #E0EAF7;
+line-height: 1.65;
+}
+
+/* LARGE, BRIGHT WHITE BOX HEADINGS */
+.panel h3 {
+font-family: 'Barlow Condensed', sans-serif !important;
+font-size: 1.8rem !important;
+font-weight: 900 !important;
+color: #FFFFFF !important;
+line-height: 1.25 !important;
+opacity: 1 !important;
+text-shadow: 0 1px 3px rgba(0, 0, 0, .45);
+margin-top: .5rem;
+margin-bottom: .5rem;
+}
+
+/* Streamlit bordered boxes and expanders */
+div[data-testid="stVerticalBlockBorderWrapper"] h1,
+div[data-testid="stVerticalBlockBorderWrapper"] h2,
+div[data-testid="stVerticalBlockBorderWrapper"] h3 {
+color: #FFFFFF !important;
+font-weight: 900 !important;
+opacity: 1 !important;
+}
+
+div[data-testid="stExpander"] {
+border: 1px solid #294968;
+border-radius: 12px;
+}
+
+div[data-testid="stExpander"] summary,
+div[data-testid="stExpander"] summary p {
+color: #FFFFFF !important;
+font-family: 'Barlow Condensed', sans-serif !important;
+font-size: 1.4rem !important;
+font-weight: 900 !important;
+opacity: 1 !important;
+}
+
+/* Streamlit markdown headings */
+.stMarkdown h2,
+.stMarkdown h3,
+.stMarkdown h4 {
+color: #FFFFFF !important;
+font-weight: 900 !important;
+opacity: 1 !important;
+text-shadow: 0 1px 2px rgba(0, 0, 0, .3);
+}
+
+div[data-testid="stMetric"] {
+background: #0C1B2D;
+border: 1px solid #2A4B6B;
+border-radius: 15px;
+padding: 1rem;
+}
+
+/* METRIC HEADINGS: bright white, bold, larger, always visible.
+   Several selectors cover different Streamlit versions. */
+div[data-testid="stMetric"] [data-testid="stMetricLabel"],
+div[data-testid="stMetric"] [data-testid="stMetricLabel"] *,
+div[data-testid="stMetric"] label,
+div[data-testid="stMetric"] label * {
+color: #FFFFFF !important;
+-webkit-text-fill-color: #FFFFFF !important;
+opacity: 1 !important;
+visibility: visible !important;
+font-family: 'DM Sans', sans-serif !important;
+font-size: 1.05rem !important;
+font-weight: 800 !important;
+letter-spacing: .06em !important;
+text-transform: uppercase !important;
+text-shadow: 0 1px 3px rgba(0, 0, 0, .55);
+white-space: normal !important;
+overflow: visible !important;
+text-overflow: clip !important;
+}
+
+/* METRIC VALUES: gold */
+div[data-testid="stMetric"] [data-testid="stMetricValue"],
+div[data-testid="stMetric"] [data-testid="stMetricValue"] * {
+color: #FFD16D !important;
+-webkit-text-fill-color: #FFD16D !important;
+font-family: 'Barlow Condensed', sans-serif !important;
+opacity: 1 !important;
+visibility: visible !important;
+}
+
+.stButton button,
+.stDownloadButton button {
+background: linear-gradient(90deg, #FFDF98, #E8B54F);
+color: #101827;
+font-weight: 900;
+border: none;
+border-radius: 12px;
+min-height: 3rem;
+}
+
+div[data-testid="stFileUploader"] {
+background: #0A1828;
+border: 1px dashed #6893BB;
+border-radius: 16px;
+padding: 1rem;
+}
+
+.stSelectbox label,
+.stSlider label {
+color: #E7F0FC !important;
+}
+
+hr {
+border-color: #294968;
+}
+</style>
+""",
     unsafe_allow_html=True,
 )
 
 
-def get_work_dir() -> Path:
-    if "ca_work_dir" not in st.session_state:
-        st.session_state["ca_work_dir"] = tempfile.mkdtemp(
-            prefix="cricket_alchemist_"
-        )
-    folder = Path(st.session_state["ca_work_dir"])
-    folder.mkdir(parents=True, exist_ok=True)
-    return folder
+# -------------------- HELPERS --------------------
 
-
-def format_duration(seconds) -> str:
+def call_stretch(widget_function, *args, **kwargs):
+    """
+    Call a Streamlit widget so that it fills the container width on both
+    new (width="stretch") and older (use_container_width=True) versions.
+    """
     try:
-        seconds = float(seconds)
-        if not np.isfinite(seconds) or seconds < 0:
-            return "N/A"
-        total = int(seconds)
-        return f"{total // 60:02d}:{total % 60:02d}"
-    except (TypeError, ValueError):
-        return "N/A"
+        return widget_function(*args, width="stretch", **kwargs)
+    except (TypeError, st.errors.StreamlitAPIException):
+        return widget_function(*args, use_container_width=True, **kwargs)
 
 
-def show_angle_chart(df: pd.DataFrame) -> None:
-    if df.empty or "Timestamp (s)" not in df.columns:
-        st.info("No measurements are available for plotting.")
-        return
+def upload_key(uploaded_file):
+    """A cheap, stable identity for an uploaded file across reruns."""
+    file_id = getattr(uploaded_file, "file_id", None)
+    if file_id:
+        return f"{file_id}|{uploaded_file.name}|{uploaded_file.size}"
+    return hashlib.sha256(uploaded_file.getvalue()).hexdigest()
 
-    columns = [c for c in ANGLE_COLUMNS if c in df.columns]
-    if not columns:
-        st.info("Joint-angle data is unavailable.")
-        return
 
-    chart_df = df[["Timestamp (s)", *columns]].copy()
-    for column in columns:
-        chart_df[column] = pd.to_numeric(
-            chart_df[column], errors="coerce"
-        )
-
-    long_df = chart_df.melt(
-        id_vars=["Timestamp (s)"],
-        value_vars=columns,
-        var_name="Joint",
-        value_name="Angle (degrees)",
-    ).dropna(subset=["Angle (degrees)"])
-
-    if long_df.empty:
-        st.info("No valid joint angles were detected.")
-        return
-
-    fig = px.line(
-        long_df,
-        x="Timestamp (s)",
-        y="Angle (degrees)",
-        color="Joint",
-        markers=True,
-        title="Joint Angles Across the Clip",
-        template="plotly_dark",
-    )
-    fig.update_layout(
+def style_figure(figure):
+    figure.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(8,13,23,0.8)",
-        font_color="#FFFFFF",
+        plot_bgcolor="rgba(5,16,30,0.9)",
+        font_color="#F2F7FF",
         margin=dict(l=10, r=10, t=55, b=10),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    return figure
 
 
-def show_coaching_notes(df: pd.DataFrame) -> None:
+def build_coaching_notes(df, detection_pct):
+    """Concise, non-diagnostic review notes derived from the measurements."""
+    notes = []
     if df.empty:
-        st.info("There are no measurements to review.")
-        return
+        return ["No frames were analysed, so there are no measurements to review."]
 
-    detected = (
-        df["Pose Detected"].fillna(False).astype(bool)
-        if "Pose Detected" in df.columns
-        else pd.Series(dtype=bool)
-    )
-
-    if detected.empty or not detected.any():
-        st.warning(
-            "No person was reliably detected. Try a well-lit video with "
-            "the bowler's full body visible and joints unobstructed."
+    if detection_pct <= 0:
+        notes.append(
+            "No body landmarks were detected. Try a clip where the whole "
+            "bowler is visible, well lit and not tiny in the frame."
         )
-        return
+        return notes
+    if detection_pct < 35:
+        notes.append(
+            f"Pose was detected in only {detection_pct:.0f}% of sampled frames, "
+            "so treat every number below with extra caution."
+        )
 
-    st.write(
-        "These are approximate 2-D measurements. Camera position, "
-        "occlusion and landmark confidence affect accuracy. Use them as "
-        "coaching-review aids, not as a medical diagnosis or a definitive "
-        "assessment of bowling legality."
+    detected = df[df["pose_detected"]]
+    sides = detected["measured_side"].astype(str)
+    sides = sides[sides.isin(["left", "right"])]
+    if not sides.empty:
+        top_side = sides.value_counts().idxmax()
+        notes.append(
+            f"Measurements were taken mostly from the {top_side} side "
+            f"({int((sides == top_side).sum())} of {len(sides)} detected frames)."
+        )
+
+    elbow = df["elbow_angle_deg"].dropna()
+    if len(elbow) >= 3:
+        notes.append(
+            f"Elbow angle ranged from {elbow.min():.0f}° to {elbow.max():.0f}° "
+            f"({elbow.max() - elbow.min():.0f}° spread). Check the frames around "
+            "release in the original video; camera angle strongly affects 2D elbow readings."
+        )
+
+    knee = df["knee_angle_deg"].dropna()
+    if len(knee) >= 3:
+        notes.append(
+            f"Knee angle fell to a minimum of {knee.min():.0f}° and reached "
+            f"{knee.max():.0f}°. Compare the front-leg frames with the footage "
+            "to review how the leg braces and extends."
+        )
+
+    wrist = df["wrist_angle_deg"].dropna()
+    if len(wrist) >= 3:
+        notes.append(
+            f"Wrist angle varied by {wrist.max() - wrist.min():.0f}°. Wrist "
+            "landmarks are small and often blurred, so confirm visually."
+        )
+
+    shoulder = df["shoulder_angle_deg"].dropna()
+    hip = df["hip_angle_deg"].dropna()
+    if len(shoulder) >= 3 and len(hip) >= 3:
+        notes.append(
+            f"Shoulder angle spanned {shoulder.min():.0f}°–{shoulder.max():.0f}° "
+            f"and hip angle {hip.min():.0f}°–{hip.max():.0f}°; these are "
+            "trunk-position indicators, not rotation measurements."
+        )
+
+    missing = [
+        label for column, label in (
+            ("wrist_angle_deg", "wrist"), ("elbow_angle_deg", "elbow"),
+            ("shoulder_angle_deg", "shoulder"), ("knee_angle_deg", "knee"),
+            ("hip_angle_deg", "hip"),
+        )
+        if df[column].notna().sum() == 0
+    ]
+    if missing:
+        notes.append(
+            "No usable " + ", ".join(missing) + " measurements were found "
+            "(landmarks hidden or low confidence)."
+        )
+
+    notes.append(
+        "These are review aids only. They do not diagnose injury risk or "
+        "decide whether an action is legal; a qualified coach should assess "
+        "the original footage."
     )
+    return notes
 
-    for column in ANGLE_COLUMNS:
-        if column not in df.columns:
-            continue
 
-        values = pd.to_numeric(
-            df[column], errors="coerce"
-        ).dropna()
-
-        if values.empty:
-            st.markdown(
-                f"- **{column}:** insufficient visible landmarks. "
-                "Review camera placement and visibility."
-            )
-        else:
-            st.markdown(
-                f"- **{column}:** observed range "
-                f"{values.min():.1f}°–{values.max():.1f}°. "
-                "Review these frames with a qualified coach."
-            )
-
+# -------------------- HERO --------------------
 
 st.markdown(
-    '<div class="ca-title">🏏 CRICKET ALCHEMIST</div>'
-    '<div class="ca-subtitle">BOWLING LAB · VIDEO & BIOMECHANICS REVIEW</div>',
+    """
+<div class="hero">
+<div class="kicker">CRICKET PERFORMANCE INTELLIGENCE</div>
+<h1>THE CRICKET <span class="gold">ALCHEMIST</span></h1>
+<p>
+<b>Turn every delivery into a learning opportunity.</b>
+Compare bowling footage with a detected pose-skeleton overlay,
+inspect estimated joint angles and explore movement graphs.
+</p>
+<div class="brand">
+🏏 BOWLING LAB &nbsp; | &nbsp;
+BUILT BY SRI SAAKYA &nbsp; | &nbsp;
+@thecricketalchemist19
+</div>
+</div>
+""",
     unsafe_allow_html=True,
 )
+
+st.markdown(
+    '<div class="section-title">YOUR BOWLING. '
+    '<span class="gold">UNDER THE LENS.</span></div>',
+    unsafe_allow_html=True,
+)
+
+st.markdown(
+    '<p class="muted">Upload a video to start your movement review. '
+    'All controls and analysis appear here—no sidebar.</p>',
+    unsafe_allow_html=True,
+)
+
+# -------------------- FEATURE CARDS --------------------
+
+features = st.columns(4)
+
+feature_info = [
+    (
+        "01 / VIDEO",
+        "Original + Skeleton",
+        "Compare source footage with the estimated pose overlay.",
+    ),
+    (
+        "02 / JOINTS",
+        "Wrist + Elbow",
+        "Inspect approximate 2D joint angles.",
+    ),
+    (
+        "03 / GRAPHS",
+        "Movement Timeline",
+        "Explore measurements across sampled frames.",
+    ),
+    (
+        "04 / EXPORT",
+        "Session Data",
+        "Download frame-level measurements as CSV.",
+    ),
+]
+
+for col, (tag, title, description) in zip(features, feature_info):
+    with col:
+        st.markdown(
+            f'<div class="panel">'
+            f'<div class="kicker">{tag}</div>'
+            f'<h3>{title}</h3>'
+            f'<div class="muted">{description}</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+with st.expander("IMPORTANT: MEASUREMENT LIMITATIONS"):
+    st.write(
+        "This prototype estimates 2D pose landmarks from a single camera. "
+        "It does not provide validated 3D biomechanics, reliable ball speed, "
+        "injury prediction or official bowling-action legality. "
+        "A coach should verify findings against the original video."
+    )
+
+# -------------------- VIDEO UPLOAD --------------------
+
 st.markdown("---")
 
-with st.sidebar:
-    st.markdown("## ⚙️ Analysis Settings")
-    stride = st.select_slider(
+st.markdown(
+    '<div class="section-title">01 — UPLOAD YOUR '
+    '<span class="gold">BOWLING CLIP</span></div>',
+    unsafe_allow_html=True,
+)
+
+settings = st.columns(2)
+
+with settings[0]:
+    stride = st.selectbox(
         "Frame sampling stride",
-        options=[1, 2, 3, 4, 5, 6],
-        value=2,
-        help="2 means process every second frame.",
+        [1, 2, 3, 4, 5],
+        index=1,
+        help="1 processes every frame; higher numbers sample fewer frames.",
     )
-    max_frames = st.slider(
+
+with settings[1]:
+    max_frames = st.selectbox(
         "Maximum sampled frames",
-        min_value=20,
-        max_value=240,
-        value=120,
-        step=20,
+        [120, 240, 360, 600],
+        index=1,
     )
-    st.caption("Use a steady video with the bowler's full body visible.")
+
+if find_ffmpeg() is None:
+    st.error(
+        "FFmpeg is not installed, so videos cannot be converted for playback. "
+        "Add a file named packages.txt containing the line `ffmpeg` to the "
+        "repository root, commit it, and reboot the app in Streamlit Cloud. "
+        "When running locally, install FFmpeg and add it to PATH."
+    )
 
 uploaded = st.file_uploader(
-    "Upload a bowling video",
-    type=SUPPORTED_EXTENSIONS,
-    help="MP4, MOV, AVI, M4V, MKV and WEBM, subject to available codecs.",
+    "Choose your bowling video",
+    type=[extension.lstrip(".") for extension in SUPPORTED_EXTENSIONS],
+    key="bowling_video_upload",
 )
 
-if uploaded is None:
+# -------------------- PREPARE VIDEO (once per upload) --------------------
+
+source = None
+
+if uploaded is not None:
+    current_key = upload_key(uploaded)
+    cached_source = st.session_state.get("source_video")
+    cached_error = st.session_state.get("source_video_error")
+
+    if cached_source and cached_source.get("key") == current_key:
+        source = cached_source
+    elif cached_error and cached_error.get("key") == current_key:
+        st.error(cached_error["message"])
+    else:
+        # A new file: drop any previous video and analysis.
+        for state_key in ("source_video", "source_video_error", "bowling_result"):
+            st.session_state.pop(state_key, None)
+
+        try:
+            with st.spinner("Converting video to a browser-compatible MP4..."):
+                converted = convert_uploaded_video(uploaded.getvalue(), uploaded.name)
+            source = {
+                "key": current_key,
+                "name": uploaded.name,
+                "mp4_bytes": converted["mp4_bytes"],
+                "info": converted["info"],
+            }
+            st.session_state["source_video"] = source
+        except FFmpegNotFoundError as error:
+            # Not cached: it is cheap to re-check once FFmpeg is installed.
+            st.error(str(error))
+        except ProcessorError as error:
+            message = (
+                f"Could not prepare this video: {error} "
+                "Try exporting it again as an H.264 MP4."
+            )
+            st.session_state["source_video_error"] = {"key": current_key, "message": message}
+            st.error(message)
+        except Exception as error:  # noqa: BLE001 - shown to the user
+            message = f"Unexpected error while preparing the video: {error}"
+            st.session_state["source_video_error"] = {"key": current_key, "message": message}
+            st.error(message)
+
+if source is not None:
+    info = source["info"]
+    st.success(
+        f"Video ready: {source['name']} | "
+        f"{len(source['mp4_bytes']) / (1024 * 1024):.1f} MB (browser copy) | "
+        f"{info['width']} × {info['height']} @ {info['fps']:.1f} fps"
+    )
+    st.video(source["mp4_bytes"], format="video/mp4")
+
+    if call_stretch(st.button, "▶ RUN BOWLING ANALYSIS", key="run_bowling_analysis"):
+        try:
+            with st.spinner(
+                "Processing video frames and estimating pose landmarks..."
+            ):
+                analysis_result = analyze_video_bytes(
+                    source["mp4_bytes"],
+                    stride=int(stride),
+                    max_frames=int(max_frames),
+                )
+
+            if not isinstance(analysis_result, dict):
+                raise ProcessorError("The processor returned an unexpected result.")
+            if "data" not in analysis_result:
+                raise ProcessorError("The processor did not return frame-level data.")
+
+            analysis_result["video_key"] = source["key"]
+            analysis_result["filename"] = source["name"]
+            st.session_state["bowling_result"] = analysis_result
+            st.success("Video analysis completed.")
+
+        except ProcessorError as error:
+            st.error(f"Video processing error: {error}")
+        except Exception as error:  # noqa: BLE001 - shown to the user
+            st.error(f"Analysis error: {error}")
+            st.info(
+                "Try a short clip with the full player visible "
+                "and good lighting."
+            )
+
+# -------------------- ANALYSIS RESULTS --------------------
+
+analysis = st.session_state.get("bowling_result")
+
+if analysis is not None:
+    raw_data = analysis.get("data")
+    df = raw_data.copy() if isinstance(raw_data, pd.DataFrame) else pd.DataFrame()
+
+    angle_columns = [
+        "wrist_angle_deg",
+        "elbow_angle_deg",
+        "shoulder_angle_deg",
+        "knee_angle_deg",
+        "hip_angle_deg",
+    ]
+    numeric_columns = ["frame", "time_seconds", "visible_landmarks"] + angle_columns
+
+    # Defensive normalisation: missing columns, NaN values, wrong dtypes
+    for column in numeric_columns:
+        if column not in df.columns:
+            df[column] = float("nan")
+        df[column] = pd.to_numeric(df[column], errors="coerce")
+    if "pose_detected" not in df.columns:
+        df["pose_detected"] = False
+    df["pose_detected"] = df["pose_detected"].fillna(False).astype(bool)
+    if "measured_side" not in df.columns:
+        df["measured_side"] = ""
+    df["measured_side"] = df["measured_side"].fillna("").astype(str)
+
+    if not df.empty and df["time_seconds"].isna().all():
+        df["time_seconds"] = [float(i) for i in range(len(df))]
+
+    df = df[
+        ["frame", "time_seconds", "pose_detected", "measured_side", "visible_landmarks"]
+        + angle_columns
+    ].reset_index(drop=True)
+
+    try:
+        duration_value = float(analysis.get("duration_seconds") or 0)
+    except (TypeError, ValueError):
+        duration_value = 0.0
+    try:
+        detection_pct = float(analysis.get("pose_detection_pct"))
+    except (TypeError, ValueError):
+        detection_pct = float(df["pose_detected"].mean() * 100) if not df.empty else 0.0
+    if detection_pct != detection_pct:  # NaN guard
+        detection_pct = 0.0
+
+    st.markdown("---")
+
     st.markdown(
-        """
-        <div class="ca-card">
-            <h3>Bowling Action Review</h3>
-            Upload a video to view the original clip, generate a skeleton
-            replay, inspect joint angles and export the measurements.
-        </div>
-        """,
+        '<div class="section-title">02 — '
+        '<span class="gold">ANALYSIS ROOM</span></div>',
         unsafe_allow_html=True,
     )
-    st.stop()
 
-uploaded_bytes = uploaded.getvalue()
-if not uploaded_bytes:
-    st.error("The uploaded file is empty.")
-    st.stop()
+    # -------------------- METRICS --------------------
 
-file_hash = hashlib.sha256(uploaded_bytes).hexdigest()
-work_dir = get_work_dir()
-suffix = Path(uploaded.name).suffix.lower() or ".mp4"
+    metrics = st.columns(5)
 
-# Convert each unique upload once per Streamlit session.
-if st.session_state.get("source_hash") != file_hash:
-    st.session_state["source_hash"] = file_hash
-    st.session_state.pop("source_video_path", None)
-    st.session_state.pop("source_error", None)
-    st.session_state.pop("analysis_result", None)
-    st.session_state.pop("analysis_key", None)
-
-    raw_path = work_dir / f"source_{file_hash[:12]}{suffix}"
-    converted_path = work_dir / f"source_{file_hash[:12]}_browser.mp4"
-
-    try:
-        raw_path.write_bytes(uploaded_bytes)
-        with st.spinner("Preparing browser-compatible video..."):
-            browser_path = convert_to_browser_mp4(
-                raw_path,
-                converted_path,
-                timeout=240,
-            )
-            get_video_info(browser_path)
-        st.session_state["source_video_path"] = browser_path
-
-    except (FFmpegError, VideoProcessingError) as exc:
-        st.session_state["source_error"] = str(exc)
-    except Exception as exc:
-        st.session_state["source_error"] = (
-            f"{type(exc).__name__}: {exc}"
-        )
-
-if st.session_state.get("source_error"):
-    st.error(st.session_state["source_error"])
-    st.info(
-        "Check that packages.txt contains ffmpeg, then reboot the app. "
-        "If the video is corrupted, export it again as MP4/H.264."
+    metrics[0].metric("CLIP LENGTH", f"{duration_value:.1f} s")
+    metrics[1].metric("SAMPLED FRAMES", str(analysis.get("sampled_frames", len(df))))
+    metrics[2].metric("POSE DETECTION", f"{detection_pct:.0f}%")
+    metrics[3].metric(
+        "RESOLUTION",
+        f"{analysis.get('width', 0)} × {analysis.get('height', 0)}",
     )
-    st.stop()
+    metrics[4].metric("WRIST SAMPLES", str(int(df["wrist_angle_deg"].notna().sum())))
 
-source_path = st.session_state.get("source_video_path")
-if not source_path or not Path(source_path).is_file():
-    st.error("Prepared video is missing. Please upload the video again.")
-    st.stop()
+    st.caption(
+        "Resolution is that of the browser-ready copy used for analysis "
+        "(very large clips are scaled down to 1280 px wide)."
+    )
 
-try:
-    source_info = get_video_info(source_path)
-except VideoProcessingError as exc:
-    st.error(str(exc))
-    st.stop()
+    # -------------------- STATUS --------------------
 
-
-# Original clip information
-m1, m2, m3, m4 = st.columns(4)
-m1.metric("CLIP LENGTH", format_duration(source_info["duration"]))
-m2.metric("SOURCE FRAMES", source_info["frame_count"])
-m3.metric(
-    "FRAME RATE",
-    f'{source_info["fps"]:.1f} FPS'
-    if source_info["fps"] > 0 else "N/A",
-)
-m4.metric(
-    "RESOLUTION",
-    f'{source_info["width"]} × {source_info["height"]}',
-)
-
-st.markdown("---")
-
-left, right = st.columns(2, gap="large")
-with left:
-    st.markdown("### 🎥 Original Video")
-    st.video(source_path, format="video/mp4")
-
-with right:
-    st.markdown("### 🦴 Pose-Skeleton Replay")
-    st.caption("Run analysis to generate the skeleton replay.")
-
-analysis_key = f"{file_hash}:{stride}:{max_frames}"
-
-if st.button(
-    "🚀 Analyze Bowling Action",
-    type="primary",
-    use_container_width=True,
-):
-    st.session_state.pop("analysis_result", None)
-    st.session_state.pop("analysis_key", None)
-
-    try:
-        analysis_dir = (
-            work_dir
-            / f"analysis_{file_hash[:12]}_{stride}_{max_frames}"
-        )
-        with st.spinner("Detecting pose landmarks and measuring angles..."):
-            result = analyze_video(
-                source_path,
-                stride=stride,
-                max_frames=max_frames,
-                work_dir=analysis_dir,
-            )
-        st.session_state["analysis_result"] = result
-        st.session_state["analysis_key"] = analysis_key
-        st.rerun()
-
-    except (VideoProcessingError, FFmpegError) as exc:
-        st.error(str(exc))
-    except Exception as exc:
-        st.error(f"Analysis failed: {type(exc).__name__}: {exc}")
-
-result = None
-if st.session_state.get("analysis_key") == analysis_key:
-    result = st.session_state.get("analysis_result")
-
-if result is None:
-    st.info("Click **Analyze Bowling Action** to create the replay and metrics.")
-    st.stop()
-
-for warning in result.get("warnings", []):
-    st.warning(warning)
-
-# Convert raw overlay to H.264 MP4; use frame fallback if conversion fails.
-overlay_mp4 = None
-overlay_raw = result.get("overlay_video_path")
-
-if overlay_raw and Path(overlay_raw).is_file():
-    raw_path = Path(overlay_raw)
-    converted_overlay = raw_path.with_name("pose_overlay_browser.mp4")
-
-    try:
-        if (
-            not converted_overlay.is_file()
-            or converted_overlay.stat().st_size == 0
-            or converted_overlay.stat().st_mtime < raw_path.stat().st_mtime
-        ):
-            with st.spinner("Preparing skeleton replay..."):
-                convert_to_browser_mp4(
-                    raw_path,
-                    converted_overlay,
-                    timeout=240,
-                )
-        if converted_overlay.is_file() and converted_overlay.stat().st_size > 0:
-            overlay_mp4 = converted_overlay
-
-    except (FFmpegError, VideoProcessingError) as exc:
+    if df.empty:
+        st.warning("The analysis returned no frame data.")
+    elif detection_pct <= 0:
         st.warning(
-            f"Skeleton video conversion failed: {exc} "
-            "Showing the frame preview instead."
+            "No person was detected in the sampled frames. Try a clip where the "
+            "whole bowler is visible, well lit and large enough in the frame."
+        )
+    elif detection_pct < 35:
+        st.warning(
+            "Few frames contained detected body landmarks. "
+            "Try a brighter clip with the whole player visible."
+        )
+    else:
+        st.info(
+            "Pose detection percentage is the share of sampled frames "
+            "with detected landmarks. It is not an accuracy score."
         )
 
-with right:
-    if overlay_mp4:
-        st.video(str(overlay_mp4), format="video/mp4")
-    else:
-        frames = result.get("overlay_frames", [])
-        if frames:
-            index = st.slider(
-                "Replay frame",
-                min_value=0,
-                max_value=len(frames) - 1,
-                value=0,
-                key=f"frame_slider_{analysis_key}",
+    if analysis.get("truncated"):
+        st.info(
+            f"Analysis stopped after the maximum of {analysis.get('max_frames')} "
+            "sampled frames; the rest of the clip was not processed. Increase the "
+            "stride or the maximum to cover the whole clip."
+        )
+    if analysis.get("frame_errors"):
+        st.warning(
+            f"{analysis['frame_errors']} sampled frame(s) could not be processed "
+            "and are marked as 'pose not detected'."
+        )
+
+    # -------------------- VIDEO COMPARISON --------------------
+
+    st.markdown("### ORIGINAL VIDEO VS SKELETON")
+
+    original_col, skeleton_col = st.columns(2, gap="medium")
+
+    with original_col:
+        st.markdown(
+            '<div class="panel"><h3>ORIGINAL DELIVERY</h3></div>',
+            unsafe_allow_html=True,
+        )
+
+        stored_source = st.session_state.get("source_video")
+        if stored_source and stored_source.get("key") == analysis.get("video_key"):
+            st.video(stored_source["mp4_bytes"], format="video/mp4")
+        else:
+            st.caption(
+                "Upload the original clip again to view it alongside "
+                "the saved analysis."
             )
-            st.image(
-                frames[index],
-                channels="RGB",
-                use_container_width=True,
-                caption=f"Sampled frame {index + 1} of {len(frames)}",
+
+    with skeleton_col:
+        st.markdown(
+            '<div class="panel"><h3>POSE-SKELETON REPLAY</h3></div>',
+            unsafe_allow_html=True,
+        )
+
+        skeleton_video_bytes = analysis.get("overlay_video_bytes")
+        overlays = analysis.get("overlay_frames") or []
+        if not isinstance(overlays, (list, tuple)):
+            overlays = []
+
+        if skeleton_video_bytes:
+            st.video(skeleton_video_bytes, format="video/mp4")
+            call_stretch(
+                st.download_button,
+                "⬇ DOWNLOAD SKELETON VIDEO",
+                data=skeleton_video_bytes,
+                file_name="cricket_alchemist_skeleton.mp4",
+                mime="video/mp4",
+                key="download_skeleton_video",
+            )
+        elif overlays:
+            st.warning(
+                "The skeleton video could not be created"
+                + (f" ({analysis.get('overlay_error')})" if analysis.get("overlay_error") else "")
+                + ". Showing the processed frames instead."
+            )
+            frame_count = len(overlays)
+            if frame_count > 1:
+                frame_number = st.slider(
+                    "Move through sampled skeleton frames",
+                    min_value=0,
+                    max_value=frame_count - 1,
+                    value=0,
+                    key="skeleton_frame_number",
+                )
+            else:
+                frame_number = 0
+
+            frame_time = float(frame_number)
+            if not df.empty and frame_number < len(df):
+                time_value = df.iloc[frame_number]["time_seconds"]
+                if pd.notna(time_value):
+                    frame_time = float(time_value)
+
+            call_stretch(
+                st.image,
+                overlays[frame_number],
+                caption=f"Sample {frame_number + 1} of {frame_count} | {frame_time:.2f} seconds",
             )
         else:
-            st.info("No skeleton frames are available.")
+            st.warning(
+                "No skeleton video or frames are available."
+                + (f" Reason: {analysis.get('overlay_error')}" if analysis.get("overlay_error") else "")
+            )
 
-# Normalize table columns to prevent missing-column errors.
-df = result.get("measurements")
-if not isinstance(df, pd.DataFrame):
-    df = pd.DataFrame()
+    # -------------------- JOINT ANGLES --------------------
 
-expected_columns = [
-    "Frame",
-    "Timestamp (s)",
-    "Pose Detected",
-    "Measured Side",
-    *ANGLE_COLUMNS,
-]
-for column in expected_columns:
-    if column not in df.columns:
-        df[column] = np.nan
+    st.markdown("### JOINT-ANGLE SNAPSHOT")
 
-df = df[expected_columns].copy()
+    angle_labels = {
+        "wrist_angle_deg": "WRIST ANGLE",
+        "elbow_angle_deg": "ELBOW ANGLE",
+        "shoulder_angle_deg": "SHOULDER ANGLE",
+        "knee_angle_deg": "KNEE ANGLE",
+        "hip_angle_deg": "HIP ANGLE",
+    }
 
-for column in ["Frame", "Timestamp (s)", *ANGLE_COLUMNS]:
-    df[column] = pd.to_numeric(df[column], errors="coerce")
+    angle_metrics = st.columns(5)
 
-df["Pose Detected"] = df["Pose Detected"].fillna(False).astype(bool)
-df["Measured Side"] = df["Measured Side"].fillna("Unavailable").astype(str)
+    for col, (column, label) in zip(angle_metrics, angle_labels.items()):
+        values = df[column].dropna()
+        display_value = f"{values.iloc[-1]:.1f}°" if not values.empty else "Not detected"
+        col.metric(label, display_value)
 
-info = result.get("info", {})
-pose_percent = float(info.get("pose_percentage", 0.0) or 0.0)
+    st.caption(
+        "Values show the last frame with a usable measurement. These are "
+        "approximate 2D image-plane angles, not validated anatomical "
+        "measurements. Hidden landmarks produce missing values."
+    )
+
+    # -------------------- ANGLE GRAPHS --------------------
+
+    st.markdown("### MOVEMENT ANALYSIS — GRAPHS")
+
+    for column, label in angle_labels.items():
+        plot_data = df[["time_seconds", column]].dropna()
+
+        if plot_data.empty:
+            st.info(
+                f"{label}: insufficient visible landmarks "
+                "to create a measurement graph."
+            )
+            continue
+
+        fig = px.line(
+            plot_data,
+            x="time_seconds",
+            y=column,
+            title=label,
+            labels={
+                "time_seconds": "Time (seconds)",
+                column: "Estimated angle (degrees)",
+            },
+            template="plotly_dark",
+        )
+        fig.update_traces(line_width=3)
+        call_stretch(st.plotly_chart, style_figure(fig), key=f"chart_{column}")
+
+    # -------------------- VISIBILITY GRAPH --------------------
+
+    visibility_data = df[["time_seconds", "visible_landmarks"]].dropna()
+
+    if not visibility_data.empty:
+        visibility_fig = px.area(
+            visibility_data,
+            x="time_seconds",
+            y="visible_landmarks",
+            title="VISIBLE BODY LANDMARKS PER FRAME",
+            labels={
+                "time_seconds": "Time (seconds)",
+                "visible_landmarks": "Visible landmarks",
+            },
+            template="plotly_dark",
+        )
+        call_stretch(st.plotly_chart, style_figure(visibility_fig), key="chart_visibility")
+
+    # -------------------- DATA TABLE --------------------
+
+    st.markdown("### COMPLETE FRAME-LEVEL DATA")
+
+    if df.empty:
+        st.info("There are no sampled measurements to display.")
+    else:
+        display_df = df.copy()
+        display_df[angle_columns] = display_df[angle_columns].round(1)
+        call_stretch(st.dataframe, display_df, hide_index=True)
+
+    # -------------------- CSV EXPORT --------------------
+
+    call_stretch(
+        st.download_button,
+        "⬇ DOWNLOAD ANALYSIS CSV",
+        data=df.to_csv(index=False).encode("utf-8"),
+        file_name="cricket_alchemist_analysis.csv",
+        mime="text/csv",
+        key="download_analysis_csv",
+    )
+
+    # -------------------- COACHING REVIEW --------------------
+
+    notes_html = "".join(
+        f"<li>{html.escape(note)}</li>" for note in build_coaching_notes(df, detection_pct)
+    )
+    st.markdown(
+        f"""
+<div class="panel">
+<h3>COACHING REVIEW</h3>
+<ul>{notes_html}</ul>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+# -------------------- FOOTER --------------------
 
 st.markdown("---")
-st.markdown("## 📊 Bowling Biomechanics Dashboard")
 
-a, b, c, d = st.columns(4)
-a.metric("SAMPLED FRAMES", int(info.get("sampled_frames", len(df)) or 0))
-b.metric("POSE DETECTION", f"{pose_percent:.1f}%")
-c.metric("DETECTED FRAMES", int(df["Pose Detected"].sum()))
-d.metric(
-    "RESOLUTION",
-    f'{info.get("width", source_info["width"])} × '
-    f'{info.get("height", source_info["height"])}',
-)
-
-st.markdown("### 📐 Joint Angle Metrics")
-angle_slots = st.columns(5)
-
-for column, slot in zip(ANGLE_COLUMNS, angle_slots):
-    values = pd.to_numeric(df[column], errors="coerce").dropna()
-    value = f"{values.mean():.1f}°" if not values.empty else "N/A"
-    slot.metric(column.upper(), value)
-
-st.markdown("### 📈 Joint-Angle Trends")
-show_angle_chart(df)
-
-st.markdown("### 🧾 Sampled Measurements")
-st.dataframe(df, use_container_width=True, hide_index=True)
-
-st.download_button(
-    "⬇️ Download Measurements CSV",
-    data=df.to_csv(index=False).encode("utf-8-sig"),
-    file_name="cricket_alchemist_bowling_measurements.csv",
-    mime="text/csv",
-    use_container_width=True,
-)
-
-st.markdown("### 🏏 Coaching Review Notes")
-show_coaching_notes(df)
-
-st.caption(
-    "These are approximate 2-D pose estimates. Camera angle, visibility "
-    "and frame quality affect accuracy. They are not a medical diagnosis "
-    "or a definitive ruling on bowling legality."
+st.markdown(
+    """
+<div style="text-align:center;padding:1.4rem 0">
+<div class="kicker">BUILT BY SRI SAAKYA</div>
+<div style="font-family:'Barlow Condensed',sans-serif;
+font-size:2.2rem;font-weight:900;color:#FFD16D">
+@thecricketalchemist19
+</div>
+<div style="color:#C2D0E2;font-size:.82rem">
+THE CRICKET ALCHEMIST · BOWLING LAB
+</div>
+</div>
+""",
+    unsafe_allow_html=True,
 )
