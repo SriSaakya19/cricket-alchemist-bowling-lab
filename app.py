@@ -1,3 +1,4 @@
+
 import os
 import tempfile
 
@@ -67,6 +68,7 @@ st.markdown(
         line-height: .9;
         font-weight: 900;
         margin: .65rem 0 1rem;
+        color: #FFFFFF;
     }
 
     .gold {
@@ -87,17 +89,23 @@ st.markdown(
         letter-spacing: .06em;
     }
 
+    /* SECTION HEADINGS */
     .section-title {
         font-family: 'Barlow Condensed', sans-serif;
-        font-size: 2.25rem;
-        font-weight: 900;
+        font-size: 2.5rem !important;
+        font-weight: 900 !important;
+        color: #FFFFFF !important;
         margin: 1.1rem 0 .2rem;
+        line-height: 1.2;
+        opacity: 1 !important;
+        text-shadow: 0 1px 3px rgba(0, 0, 0, .45);
     }
 
     .muted {
         color: #C2D0E2;
     }
 
+    /* FEATURE AND CONTENT BOXES */
     .panel {
         background: linear-gradient(145deg, #10243A, #091524);
         border: 1px solid #294968;
@@ -106,10 +114,50 @@ st.markdown(
         min-height: 145px;
     }
 
+    /* FIX: LARGE, BRIGHT WHITE BOX HEADINGS */
     .panel h3 {
-        font-family: 'Barlow Condensed', sans-serif;
-        font-size: 1.55rem;
-        color: #FFDA85;
+        font-family: 'Barlow Condensed', sans-serif !important;
+        font-size: 1.8rem !important;
+        font-weight: 900 !important;
+        color: #FFFFFF !important;
+        line-height: 1.25 !important;
+        opacity: 1 !important;
+        text-shadow: 0 1px 3px rgba(0, 0, 0, .45);
+        margin-top: .5rem;
+        margin-bottom: .5rem;
+    }
+
+    /* Streamlit bordered boxes and expanders */
+    div[data-testid="stVerticalBlockBorderWrapper"] h1,
+    div[data-testid="stVerticalBlockBorderWrapper"] h2,
+    div[data-testid="stVerticalBlockBorderWrapper"] h3 {
+        color: #FFFFFF !important;
+        font-weight: 900 !important;
+        opacity: 1 !important;
+    }
+
+    div[data-testid="stExpander"] {
+        border: 1px solid #294968;
+        border-radius: 12px;
+    }
+
+    div[data-testid="stExpander"] summary,
+    div[data-testid="stExpander"] summary p {
+        color: #FFFFFF !important;
+        font-family: 'Barlow Condensed', sans-serif !important;
+        font-size: 1.4rem !important;
+        font-weight: 900 !important;
+        opacity: 1 !important;
+    }
+
+    /* Streamlit markdown headings */
+    .stMarkdown h2,
+    .stMarkdown h3,
+    .stMarkdown h4 {
+        color: #FFFFFF !important;
+        font-weight: 900 !important;
+        opacity: 1 !important;
+        text-shadow: 0 1px 2px rgba(0, 0, 0, .3);
     }
 
     div[data-testid="stMetric"] {
@@ -119,12 +167,14 @@ st.markdown(
         padding: 1rem;
     }
 
-    div[data-testid="stMetricLabel"] {
-        color: #D7E2F0;
+    div[data-testid="stMetricLabel"],
+    div[data-testid="stMetricLabel"] p {
+        color: #D7E2F0 !important;
     }
 
-    div[data-testid="stMetricValue"] {
-        color: #FFD16D;
+    div[data-testid="stMetricValue"],
+    div[data-testid="stMetricValue"] div {
+        color: #FFD16D !important;
         font-family: 'Barlow Condensed', sans-serif;
     }
 
@@ -148,10 +198,6 @@ st.markdown(
     .stSelectbox label,
     .stSlider label {
         color: #E7F0FC !important;
-    }
-
-    div[data-testid="stExpander"] {
-        border: 1px solid #294968;
     }
 
     hr {
@@ -270,7 +316,6 @@ with settings[1]:
         index=1,
     )
 
-
 uploaded = st.file_uploader(
     "Choose your bowling video",
     type=["mp4", "mov", "avi", "m4v"],
@@ -288,7 +333,6 @@ if uploaded is not None:
         f"{len(video_bytes) / (1024 * 1024):.1f} MB"
     )
 
-    # Display the uploaded video using its bytes.
     video_format = uploaded.type or "video/mp4"
 
     st.video(
@@ -334,7 +378,6 @@ if uploaded is not None:
                     "The processor did not return frame-level data."
                 )
 
-            # Save the result for the next Streamlit rerun.
             st.session_state["bowling_result"] = analysis_result
             st.session_state["bowling_filename"] = uploaded.name
 
@@ -363,7 +406,6 @@ if uploaded is not None:
 
 # -------------------- ANALYSIS RESULTS --------------------
 analysis = st.session_state.get("bowling_result")
-
 
 if analysis is not None:
 
@@ -400,7 +442,6 @@ if analysis is not None:
             errors="coerce",
         )
 
-    # Fill missing timestamps safely for display and plotting.
     if df["time_seconds"].isna().all() and not df.empty:
         df["time_seconds"] = range(len(df))
 
@@ -411,7 +452,6 @@ if analysis is not None:
         '<span class="gold">ANALYSIS ROOM</span></div>',
         unsafe_allow_html=True,
     )
-
 
     # -------------------- METRICS --------------------
     metrics = st.columns(5)
@@ -443,7 +483,6 @@ if analysis is not None:
         str(wrist_count),
     )
 
-
     # -------------------- STATUS --------------------
     if not analysis.get("mediapipe_available", False):
 
@@ -466,7 +505,6 @@ if analysis is not None:
             "with detected landmarks. It is not an accuracy score."
         )
 
-
     # -------------------- VIDEO COMPARISON --------------------
     st.markdown("### ORIGINAL VIDEO VS SKELETON")
 
@@ -479,7 +517,6 @@ if analysis is not None:
             unsafe_allow_html=True,
         )
 
-        # Use the current upload when available.
         if uploaded is not None:
             st.video(
                 uploaded.getvalue(),
@@ -490,7 +527,6 @@ if analysis is not None:
                 "Upload the original clip again to view it alongside "
                 "the saved analysis."
             )
-
 
     with skeleton_col:
 
@@ -504,8 +540,6 @@ if analysis is not None:
         if overlays is None:
             overlays = []
 
-        # Convert to a list only if the processor returned another
-        # iterable type. A single image is not a sequence of frames.
         if not isinstance(overlays, (list, tuple)):
             st.warning(
                 "The processor returned overlay_frames in an unexpected "
@@ -513,9 +547,37 @@ if analysis is not None:
             )
             overlays = []
 
-        if overlays and not df.empty:
+        # Play the generated skeleton video when available.
+        skeleton_video_path = analysis.get("overlay_video_path")
 
-            # Prevent the slider index from exceeding the data rows.
+        if (
+            skeleton_video_path
+            and os.path.exists(skeleton_video_path)
+            and os.path.getsize(skeleton_video_path) > 0
+        ):
+            try:
+                with open(skeleton_video_path, "rb") as video_file:
+                    skeleton_video_bytes = video_file.read()
+
+                st.video(skeleton_video_bytes, format="video/mp4")
+
+                st.download_button(
+                    "⬇ DOWNLOAD SKELETON VIDEO",
+                    data=skeleton_video_bytes,
+                    file_name="cricket_alchemist_skeleton.mp4",
+                    mime="video/mp4",
+                    use_container_width=True,
+                )
+
+            except Exception as error:
+                st.error(f"Could not play skeleton video: {error}")
+
+        elif overlays and not df.empty:
+
+            st.warning(
+                "No generated MP4 was found. Showing sampled frames instead."
+            )
+
             max_valid_index = min(len(overlays), len(df)) - 1
 
             frame_number = st.slider(
@@ -527,39 +589,29 @@ if analysis is not None:
             )
 
             selected_frame = overlays[frame_number]
-
             frame_time_value = df.iloc[frame_number]["time_seconds"]
 
-            if pd.isna(frame_time_value):
-                frame_time = float(frame_number)
-            else:
-                frame_time = float(frame_time_value)
+            frame_time = (
+                float(frame_time_value)
+                if pd.notna(frame_time_value)
+                else float(frame_number)
+            )
 
-            try:
-                st.image(
-                    selected_frame,
-                    caption=(
-                        f"Sample {frame_number + 1} | "
-                        f"{frame_time:.2f} seconds"
-                    ),
-                    width="stretch",
-                )
-
-            except Exception as error:
-                st.error(f"Could not display skeleton frame: {error}")
-                st.caption(
-                    "Check whether overlay_frames contains valid "
-                    "image arrays in dynamic_processor.py."
-                )
+            st.image(
+                selected_frame,
+                caption=(
+                    f"Sample {frame_number + 1} | "
+                    f"{frame_time:.2f} seconds"
+                ),
+                width="stretch",
+            )
 
         else:
 
             st.warning(
-                "No skeleton frames are available. "
-                "The app.py display code cannot create skeletons by itself. "
+                "No skeleton video or frames are available. "
                 "Check analyze_video() in dynamic_processor.py."
             )
-
 
     # -------------------- JOINT ANGLES --------------------
     st.markdown("### JOINT-ANGLE SNAPSHOT")
@@ -593,7 +645,6 @@ if analysis is not None:
         "anatomical measurements. Hidden landmarks may produce missing values."
     )
 
-
     # -------------------- ANGLE GRAPHS --------------------
     st.markdown("### MOVEMENT ANALYSIS — GRAPHS")
 
@@ -604,7 +655,6 @@ if analysis is not None:
         ].dropna()
 
         if plot_data.empty:
-
             st.info(
                 f"{label}: insufficient visible landmarks "
                 "to create a measurement graph."
@@ -637,13 +687,13 @@ if analysis is not None:
             width="stretch",
         )
 
-
-     # -------------------- VISIBILITY GRAPH --------------------
+    # -------------------- VISIBILITY GRAPH --------------------
     visibility_data = df[
         ["time_seconds", "visible_landmarks"]
     ].dropna()
 
     if not visibility_data.empty:
+
         visibility_fig = px.area(
             visibility_data,
             x="time_seconds",
@@ -706,6 +756,7 @@ if analysis is not None:
         """,
         unsafe_allow_html=True,
     )
+
 
 # -------------------- FOOTER --------------------
 st.markdown("---")
