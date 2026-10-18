@@ -638,13 +638,12 @@ if analysis is not None:
         )
 
 
-    # -------------------- VISIBILITY GRAPH --------------------
+     # -------------------- VISIBILITY GRAPH --------------------
     visibility_data = df[
         ["time_seconds", "visible_landmarks"]
     ].dropna()
 
     if not visibility_data.empty:
-
         visibility_fig = px.area(
             visibility_data,
             x="time_seconds",
@@ -658,3 +657,71 @@ if analysis is not None:
         )
 
         visibility_fig.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(5,16,30,0.9)",
+            font_color="#F2F7FF",
+            margin=dict(
+                l=10,
+                r=10,
+                t=55,
+                b=10,
+            ),
+        )
+
+        st.plotly_chart(
+            visibility_fig,
+            width="stretch",
+        )
+
+    # -------------------- DATA TABLE --------------------
+    st.markdown("### COMPLETE FRAME-LEVEL DATA")
+
+    st.dataframe(
+        df,
+        width="stretch",
+        hide_index=True,
+    )
+
+    # -------------------- CSV EXPORT --------------------
+    st.download_button(
+        "⬇ DOWNLOAD ANALYSIS CSV",
+        data=df.to_csv(index=False).encode("utf-8"),
+        file_name="cricket_alchemist_analysis.csv",
+        mime="text/csv",
+        use_container_width=True,
+    )
+
+    # -------------------- COACHING REVIEW --------------------
+    st.markdown(
+        """
+        <div class="panel">
+          <h3>COACHING REVIEW</h3>
+          <div class="muted">
+            Use the graphs to identify frames for closer review.
+            These estimates alone cannot establish whether a bowling
+            action is correct or incorrect. A qualified coach should
+            assess the original footage and camera position.
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+# -------------------- FOOTER --------------------
+st.markdown("---")
+
+st.markdown(
+    """
+    <div style="text-align:center;padding:1.4rem 0">
+      <div class="kicker">BUILT BY SRI SAAKYA</div>
+      <div style="font-family:'Barlow Condensed',sans-serif;
+                  font-size:2.2rem;font-weight:900;color:#FFD16D">
+          @thecricketalchemist19
+      </div>
+      <div style="color:#C2D0E2;font-size:.82rem">
+          THE CRICKET ALCHEMIST · BOWLING LAB
+      </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
