@@ -1,9 +1,11 @@
+import base64
 import hashlib
 import html
 
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+import streamlit.components.v1 as components
 
 from dynamic_processor import (
     SUPPORTED_EXTENSIONS,
@@ -253,6 +255,73 @@ def call_stretch(widget_function, *args, **kwargs):
         return widget_function(*args, width="stretch", **kwargs)
     except (TypeError, st.errors.StreamlitAPIException):
         return widget_function(*args, use_container_width=True, **kwargs)
+
+
+MAX_EMBED_BYTES = 40 * 1024 * 1024
+
+
+def show_video(video_bytes, width=16, height=9):
+    """
+    Show an MP4 with a plain HTML5 player and the video embedded as a data URI.
+    This bypasses Streamlit's media-file server (a blank 0:00 player there is
+    a serving problem, not an encoding problem). Very large files fall back
+    to st.video.
+    """
+    if not video_bytes:
+        st.warning("There is no video to show.")
+        return
+    if len(video_bytes) > MAX_EMBED_BYTES:
+        st.video(video_bytes, format="video/mp4")
+        return
+
+    try:
+        ratio = float(height) / float(width)
+    except (TypeError, ValueError, ZeroDivisionError):
+        ratio = 9 / 16
+    frame_height = int(min(max(700 * ratio, 240), 640)) + 12
+
+    encoded = base64.b64encode(video_bytes).decode("ascii")
+    components.html(
+        f"""
+<style>
+html, body {{ margin: 0; background: transparent; }}
+video {{ width: 100%; max-height: {frame_height - 12}px; background: #000; border-radius: 12px; }}
+</style>
+<video controls playsinline preload="auto" src="data:video/mp4;base64,{encoded}"></video>
+""",
+        height=frame_height,
+    )
+
+
+def download_link(label, data, file_name, mime):
+    """
+    Gold download button rendered in an HTML component. The file is built in
+    the browser from embedded data, so it does not depend on Streamlit's
+    media-file server.
+    """
+    payload = base64.b64encode(data).decode("ascii")
+    components.html(
+        f"""
+<style>
+html, body {{ margin: 0; background: transparent; }}
+a {{
+  display: block; box-sizing: border-box; text-align: center;
+  padding: .85rem 1rem; border-radius: 12px; text-decoration: none;
+  background: linear-gradient(90deg, #FFDF98, #E8B54F); color: #101827;
+  font: 900 .95rem Arial, Helvetica, sans-serif;
+}}
+</style>
+<a id="dl" href="#" download="{html.escape(file_name)}">{html.escape(label)}</a>
+<script>
+const raw = atob("{payload}");
+const bytes = new Uint8Array(raw.length);
+for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+document.getElementById("dl").href =
+  URL.createObjectURL(new Blob([bytes], {{ type: "{mime}" }}));
+</script>
+""",
+        height=58,
+    )
 
 
 def upload_key(uploaded_file):
@@ -526,7 +595,7 @@ if source is not None:
         f"{len(source['mp4_bytes']) / (1024 * 1024):.1f} MB (browser copy) | "
         f"{info['width']} × {info['height']} @ {info['fps']:.1f} fps"
     )
-    st.video(source["mp4_bytes"], format="video/mp4")
+    show_video(source["mp4_bytes"], info["width"], info["height"])
 
     if call_stretch(st.button, "▶ RUN BOWLING ANALYSIS", key="run_bowling_analysis"):
         try:
@@ -678,7 +747,11 @@ if analysis is not None:
 
         stored_source = st.session_state.get("source_video")
         if stored_source and stored_source.get("key") == analysis.get("video_key"):
-            st.video(stored_source["mp4_bytes"], format="video/mp4")
+            show_video(
+                stored_source["mp4_bytes"],
+                stored_source["info"]["width"],
+                stored_source["info"]["height"],
+            )
         else:
             st.caption(
                 "Upload the original clip again to view it alongside "
@@ -697,14 +770,17 @@ if analysis is not None:
             overlays = []
 
         if skeleton_video_bytes:
-            st.video(skeleton_video_bytes, format="video/mp4")
-            call_stretch(
-                st.download_button,
+            overlay_meta = analysis.get("overlay_info") or {}
+            show_video(
+                skeleton_video_bytes,
+                overlay_meta.get("width", 16),
+                overlay_meta.get("height", 9),
+            )
+            download_link(
                 "⬇ DOWNLOAD SKELETON VIDEO",
-                data=skeleton_video_bytes,
-                file_name="cricket_alchemist_skeleton.mp4",
-                mime="video/mp4",
-                key="download_skeleton_video",
+                skeleton_video_bytes,
+                "cricket_alchemist_skeleton.mp4",
+                "video/mp4",
             )
         elif overlays:
             st.warning(
@@ -730,11 +806,13 @@ if analysis is not None:
                 if pd.notna(time_value):
                     frame_time = float(time_value)
 
-            call_stretch(
-                st.image,
-                overlays[frame_number],
-                caption=f"Sample {frame_number + 1} of {frame_count} | {frame_time:.2f} seconds",
+            frame_b64 = base64.b64encode(overlays[frame_number]).decode("ascii")
+            st.markdown(
+                f'<img src="data:image/jpeg;base64,{frame_b64}" '
+                'style="width:100%;border-radius:12px">',
+                unsafe_allow_html=True,
             )
+            st.caption(f"Sample {frame_number + 1} of {frame_count} | {frame_time:.2f} seconds")
         else:
             st.warning(
                 "No skeleton video or frames are available."
@@ -825,13 +903,11 @@ if analysis is not None:
 
     # -------------------- CSV EXPORT --------------------
 
-    call_stretch(
-        st.download_button,
+    download_link(
         "⬇ DOWNLOAD ANALYSIS CSV",
-        data=df.to_csv(index=False).encode("utf-8"),
-        file_name="cricket_alchemist_analysis.csv",
-        mime="text/csv",
-        key="download_analysis_csv",
+        df.to_csv(index=False).encode("utf-8"),
+        "cricket_alchemist_analysis.csv",
+        "text/csv",
     )
 
     # -------------------- COACHING REVIEW --------------------
