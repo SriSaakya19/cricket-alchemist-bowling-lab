@@ -2,6 +2,7 @@ import base64
 import hashlib
 import html
 
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -343,114 +344,270 @@ def style_figure(figure):
     return figure
 
 
-def build_3d_figure(pose_3d, connections, sides, times, frame_ms):
+def prepare_3d_display(pose_3d, max_hold=5):
     """
-    Animated Plotly 3D skeleton. MediaPipe world landmarks are in metres,
-    hip-centred, with y pointing down, so they are re-mapped for plotting:
-    x = left/right, y = depth, z = height.
+    Display-only clean-up of the 3D poses (the CSV and angles keep raw values):
+    a light 1-2-1 temporal smoothing to reduce landmark jitter, and holding the
+    last pose through very short tracking gaps so the skeleton does not blink.
     """
-    frame_count = len(pose_3d)
+    arrays = [
+        np.asarray(frame, dtype=float) if frame and len(frame) >= 33 else None
+        for frame in pose_3d
+    ]
+    smoothed = []
+    for index, current in enumerate(arrays):
+        if current is None:
+            smoothed.append(None)
+            continue
+        total, weight = 2.0 * current, 2.0
+        for neighbour in (index - 1, index + 1):
+            if 0 <= neighbour < len(arrays) and arrays[neighbour] is not None:
+                total = total + arrays[neighbour]
+                weight += 1.0
+        smoothed.append(total / weight)
+
+    held, last, gap = [], None, 0
+    for pose in smoothed:
+        if pose is not None:
+            last, gap = pose, 0
+            held.append(pose)
+        else:
+            gap += 1
+            held.append(last if (last is not None and gap <= max_hold) else None)
+    return held
+
+
+def build_3d_readouts(df, frame_total):
+    """Per-frame text for the live 3D angle read-out."""
+    fields = (
+        ("ELBOW", "elbow_angle_3d_deg"),
+        ("KNEE", "knee_angle_3d_deg"),
+        ("SHOULDER", "shoulder_angle_3d_deg"),
+        ("HIP", "hip_angle_3d_deg"),
+    )
+    readouts = []
+    for index in range(frame_total):
+        row = df.iloc[index]
+        if not bool(row["pose_detected"]):
+            readouts.append("<b>TRACKING LOST</b>")
+            continue
+        parts = []
+        for label, column in fields:
+            value = row[column]
+            parts.append(f"{label} {value:.0f}°" if pd.notna(value) else f"{label} —")
+        readouts.append("<b>3D ANGLES</b><br>" + "<br>".join(parts))
+    return readouts
+
+
+def build_3d_figure(display_poses, connections, sides, readouts, frame_ms):
+    """
+    Animated Plotly 3D skeleton.
+
+    MediaPipe world landmarks are in metres, hip-centred, with y pointing down,
+    so they are re-mapped for plotting: x = left/right, y = depth, z = height.
+    Left side = cyan, right side = coral, measured arm = gold, with a floor
+    shadow for depth, a translucent torso, a wrist trail and camera presets.
+    """
+    frame_count = len(display_poses)
     arm_pairs = {"right": [(12, 14), (14, 16)], "left": [(11, 13), (13, 15)]}
     joint_ids = [0] + list(range(11, 33))
-    empty = ([], [], [])
+    trail_length = 40
 
-    def segments(points, pairs):
+    # Split connections into neutral / left / right (odd ids are left, even are right)
+    neutral_pairs, left_pairs, right_pairs = [], [], []
+    for a, b in connections:
+        if a >= 11 and b >= 11 and a % 2 == 1 and b % 2 == 1:
+            left_pairs.append((a, b))
+        elif a >= 11 and b >= 11 and a % 2 == 0 and b % 2 == 0:
+            right_pairs.append((a, b))
+        else:
+            neutral_pairs.append((a, b))
+
+    plot_points = [
+        None if pose is None
+        else np.column_stack([pose[:, 0], pose[:, 2], -pose[:, 1]])
+        for pose in display_poses
+    ]
+    valid = [pts for pts in plot_points if pts is not None]
+    stacked = np.stack(valid)
+    half_x = float(np.clip(np.abs(stacked[:, :, 0]).max() * 1.15, 0.6, 1.6))
+    half_y = float(np.clip(np.abs(stacked[:, :, 1]).max() * 1.15, 0.6, 1.6))
+    z_low = float(stacked[:, :, 2].min() - 0.12)
+    z_high = float(stacked[:, :, 2].max() + 0.12)
+
+    empty = ([], [], [])
+    empty_mesh = ([0.0] * 4, [0.0] * 4, [0.0] * 4)
+
+    def segments(points, pairs, flat_z=None):
         xs, ys, zs = [], [], []
         for a, b in pairs:
-            xs += [points[a][0], points[b][0], None]
-            ys += [points[a][1], points[b][1], None]
-            zs += [points[a][2], points[b][2], None]
+            za = points[a][2] if flat_z is None else flat_z
+            zb = points[b][2] if flat_z is None else flat_z
+            xs += [round(float(points[a][0]), 3), round(float(points[b][0]), 3), None]
+            ys += [round(float(points[a][1]), 3), round(float(points[b][1]), 3), None]
+            zs += [round(float(za), 3), round(float(zb), 3), None]
         return xs, ys, zs
 
-    def frame_data(index):
-        frame = pose_3d[index]
-        if not frame or len(frame) < 33:
-            return empty, empty, empty
-        points = [(p[0], p[2], -p[1]) for p in frame]
-        body = segments(points, connections)
-        arm = segments(points, arm_pairs.get(sides[index], []))
-        joints = (
-            [points[i][0] for i in joint_ids],
-            [points[i][1] for i in joint_ids],
-            [points[i][2] for i in joint_ids],
-        )
-        return body, arm, joints
+    def frame_traces(index):
+        points = plot_points[index]
+        if points is None:
+            return [empty, empty, empty, empty, empty, empty_mesh, empty, empty]
 
-    first = next((i for i in range(frame_count) if pose_3d[i]), 0)
-    body0, arm0, joints0 = frame_data(first)
+        side = sides[index]
+        torso = points[[11, 12, 24, 23]]
+        joints = points[joint_ids]
+
+        trail = [], [], []
+        wrist_id = {"right": 16, "left": 15}.get(side)
+        if wrist_id is not None:
+            for j in range(max(0, index - trail_length + 1), index + 1):
+                if plot_points[j] is not None:
+                    trail[0].append(round(float(plot_points[j][wrist_id][0]), 3))
+                    trail[1].append(round(float(plot_points[j][wrist_id][1]), 3))
+                    trail[2].append(round(float(plot_points[j][wrist_id][2]), 3))
+
+        return [
+            segments(points, neutral_pairs),
+            segments(points, left_pairs),
+            segments(points, right_pairs),
+            segments(points, arm_pairs.get(side, [])),
+            ([round(float(v), 3) for v in joints[:, 0]],
+             [round(float(v), 3) for v in joints[:, 1]],
+             [round(float(v), 3) for v in joints[:, 2]]),
+            ([round(float(v), 3) for v in torso[:, 0]],
+             [round(float(v), 3) for v in torso[:, 1]],
+             [round(float(v), 3) for v in torso[:, 2]]),
+            segments(points, connections, flat_z=z_low),
+            trail,
+        ]
+
+    def readout_annotation(index):
+        return [dict(
+            text=readouts[index], xref="paper", yref="paper",
+            x=1.0, y=1.0, xanchor="right", yanchor="top", showarrow=False,
+            align="right", font=dict(color="#FFD16D", size=13),
+            bgcolor="rgba(8,20,36,0.75)", bordercolor="#294968",
+            borderwidth=1, borderpad=8,
+        )]
+
+    first = next(i for i in range(frame_count) if plot_points[i] is not None)
+    t0 = frame_traces(first)
 
     figure = go.Figure(
         data=[
-            go.Scatter3d(x=body0[0], y=body0[1], z=body0[2], mode="lines",
-                         line=dict(color="#4CC1FF", width=5), hoverinfo="skip"),
-            go.Scatter3d(x=arm0[0], y=arm0[1], z=arm0[2], mode="lines",
-                         line=dict(color="#FFD16D", width=10), hoverinfo="skip"),
-            go.Scatter3d(x=joints0[0], y=joints0[1], z=joints0[2], mode="markers",
-                         marker=dict(size=4, color="#FFFFFF"), hoverinfo="skip"),
+            go.Scatter3d(x=t0[0][0], y=t0[0][1], z=t0[0][2], mode="lines",
+                         line=dict(color="#B8CCE0", width=6), hoverinfo="skip"),
+            go.Scatter3d(x=t0[1][0], y=t0[1][1], z=t0[1][2], mode="lines",
+                         line=dict(color="#4CC1FF", width=8), hoverinfo="skip"),
+            go.Scatter3d(x=t0[2][0], y=t0[2][1], z=t0[2][2], mode="lines",
+                         line=dict(color="#FF7F96", width=8), hoverinfo="skip"),
+            go.Scatter3d(x=t0[3][0], y=t0[3][1], z=t0[3][2], mode="lines",
+                         line=dict(color="#FFD16D", width=13), hoverinfo="skip"),
+            go.Scatter3d(x=t0[4][0], y=t0[4][1], z=t0[4][2], mode="markers",
+                         marker=dict(size=[14] + [5] * (len(joint_ids) - 1),
+                                     color="#FFFFFF",
+                                     line=dict(color="#0A1828", width=1)),
+                         hoverinfo="skip"),
+            go.Mesh3d(x=t0[5][0], y=t0[5][1], z=t0[5][2],
+                      i=[0, 0], j=[1, 2], k=[2, 3],
+                      color="#7FB8E6", opacity=0.35, flatshading=True,
+                      hoverinfo="skip"),
+            go.Scatter3d(x=t0[6][0], y=t0[6][1], z=t0[6][2], mode="lines",
+                         line=dict(color="rgba(130,170,210,0.28)", width=6),
+                         hoverinfo="skip"),
+            go.Scatter3d(x=t0[7][0], y=t0[7][1], z=t0[7][2], mode="lines",
+                         line=dict(color="rgba(255,209,109,0.65)", width=4),
+                         hoverinfo="skip"),
         ],
         frames=[
             go.Frame(
                 name=str(i),
-                traces=[0, 1, 2],
+                traces=list(range(8)),
                 data=[
-                    go.Scatter3d(x=part[0], y=part[1], z=part[2])
-                    for part in frame_data(i)
+                    go.Mesh3d(x=part[0], y=part[1], z=part[2]) if n == 5
+                    else go.Scatter3d(x=part[0], y=part[1], z=part[2])
+                    for n, part in enumerate(frame_traces(i))
                 ],
+                layout=dict(annotations=readout_annotation(i)),
             )
             for i in range(frame_count)
         ],
     )
 
     axis_style = dict(
-        range=[-1.1, 1.1],
-        backgroundcolor="rgba(5,16,30,0.9)",
-        gridcolor="#294968",
-        zerolinecolor="#4A6F93",
-        showbackground=True,
-        color="#F2F7FF",
+        showbackground=False,
+        gridcolor="#1E3550",
+        zerolinecolor="#2F4C6B",
+        color="#C2D0E2",
+        tickfont=dict(size=9),
     )
+    up = dict(x=0, y=0, z=1)
+    camera_buttons = [
+        ("3/4 view", dict(x=1.6, y=-1.8, z=0.7)),
+        ("Side-on", dict(x=2.4, y=0.0, z=0.35)),
+        ("Front", dict(x=0.0, y=-2.4, z=0.35)),
+        ("Top", dict(x=0.0, y=-0.2, z=2.6)),
+    ]
+
     figure.update_layout(
-        height=620,
+        height=640,
         showlegend=False,
+        uirevision="skeleton3d",
         paper_bgcolor="rgba(0,0,0,0)",
         font_color="#F2F7FF",
-        margin=dict(l=0, r=0, t=10, b=0),
+        margin=dict(l=0, r=0, t=0, b=0),
+        annotations=readout_annotation(first),
         scene=dict(
-            xaxis=dict(title="Left–right (m)", **axis_style),
-            yaxis=dict(title="Depth (m)", **axis_style),
-            zaxis=dict(title="Height (m)", **axis_style),
-            aspectmode="cube",
-            camera=dict(eye=dict(x=1.5, y=-1.7, z=0.7)),
+            xaxis=dict(title="Left–right (m)", range=[-half_x, half_x], **axis_style),
+            yaxis=dict(title="Depth (m)", range=[-half_y, half_y], **axis_style),
+            zaxis=dict(title="Height (m)", range=[z_low, z_high], **axis_style),
+            aspectmode="data",
+            camera=dict(eye=camera_buttons[0][1], up=up),
         ),
-        updatemenus=[dict(
-            type="buttons",
-            showactive=False,
-            direction="left",
-            x=0.0, y=0.0, xanchor="left", yanchor="top",
-            pad=dict(t=45, r=10),
-            bgcolor="#E8B54F",
-            font=dict(color="#101827"),
-            buttons=[
-                dict(label="▶ Play", method="animate",
-                     args=[None, dict(frame=dict(duration=frame_ms, redraw=True),
-                                      transition=dict(duration=0),
-                                      fromcurrent=True, mode="immediate")]),
-                dict(label="⏸ Pause", method="animate",
-                     args=[[None], dict(frame=dict(duration=0, redraw=False),
-                                        transition=dict(duration=0),
-                                        mode="immediate")]),
-            ],
-        )],
+        updatemenus=[
+            dict(
+                type="buttons", direction="left", showactive=False,
+                x=0.0, y=1.0, xanchor="left", yanchor="top",
+                pad=dict(t=6, l=6, r=6),
+                bgcolor="#10243A", bordercolor="#4A6F93",
+                font=dict(color="#FFFFFF", size=12),
+                buttons=[
+                    dict(label=label, method="relayout",
+                         args=[{"scene.camera.eye": eye, "scene.camera.up": up}])
+                    for label, eye in camera_buttons
+                ],
+            ),
+            dict(
+                type="buttons", direction="left", showactive=False,
+                x=0.0, y=0.0, xanchor="left", yanchor="top",
+                pad=dict(t=45, r=10),
+                bgcolor="#E8B54F", font=dict(color="#101827"),
+                buttons=[
+                    dict(label="▶ Play", method="animate",
+                         args=[None, dict(frame=dict(duration=frame_ms, redraw=True),
+                                          transition=dict(duration=0),
+                                          fromcurrent=True, mode="immediate")]),
+                    dict(label="🐢 Slow-mo", method="animate",
+                         args=[None, dict(frame=dict(duration=frame_ms * 3, redraw=True),
+                                          transition=dict(duration=0),
+                                          fromcurrent=True, mode="immediate")]),
+                    dict(label="⏸ Pause", method="animate",
+                         args=[[None], dict(frame=dict(duration=0, redraw=False),
+                                            transition=dict(duration=0),
+                                            mode="immediate")]),
+                ],
+            ),
+        ],
         sliders=[dict(
             active=0,
-            x=0.22, len=0.76, y=0, yanchor="top",
+            x=0.34, len=0.64, y=0, yanchor="top",
             pad=dict(t=40, b=10),
-            currentvalue=dict(prefix="Time (s): ", font=dict(color="#FFD16D")),
+            currentvalue=dict(prefix="Frame ", font=dict(color="#FFD16D")),
             font=dict(color="rgba(0,0,0,0)"),  # hide per-step labels, keep the current value
             steps=[
                 dict(
                     method="animate",
-                    label=f"{times[i]:.2f}",
+                    label=f"{i + 1} / {frame_count}",
                     args=[[str(i)], dict(mode="immediate",
                                          frame=dict(duration=0, redraw=True),
                                          transition=dict(duration=0))],
@@ -965,10 +1122,6 @@ if analysis is not None:
     else:
         frame_total = min(len(pose_3d), len(df))
         side_list = df["measured_side"].tolist()[:frame_total]
-        time_list = [
-            float(value) if pd.notna(value) else float(index)
-            for index, value in enumerate(df["time_seconds"].tolist()[:frame_total])
-        ]
         try:
             fps_value = float(analysis.get("fps") or 25.0)
             stride_value = int(analysis.get("stride") or 1)
@@ -977,16 +1130,21 @@ if analysis is not None:
         frame_ms = int(min(max(1000.0 * stride_value / max(fps_value, 1.0), 30), 250))
 
         try:
+            display_poses = prepare_3d_display(pose_3d[:frame_total])
+            readout_list = build_3d_readouts(df, frame_total)
             figure_3d = build_3d_figure(
-                pose_3d[:frame_total], pose_connections, side_list, time_list, frame_ms
+                display_poses, pose_connections, side_list, readout_list, frame_ms
             )
             call_stretch(st.plotly_chart, figure_3d, key="chart_3d_skeleton")
             st.caption(
-                "Drag to rotate, scroll to zoom, press Play or use the slider. "
-                "Gold marks the measured arm. This 3D pose is estimated from a single "
-                "camera, so depth is approximate and the skeleton is hip-centred "
-                "(movement across the crease is not shown). It is not validated "
-                "biomechanics."
+                "Drag to rotate, scroll to zoom, use the view buttons (3/4, Side-on, "
+                "Front, Top), then Play or Slow-mo. Cyan is the left side, coral the "
+                "right side, gold the measured arm with its wrist trail. The grey "
+                "shadow on the floor helps judge depth. For display only, the pose is "
+                "lightly smoothed and held through very short tracking gaps; the CSV "
+                "keeps raw values. This 3D pose is estimated from a single camera, so "
+                "depth is approximate and the skeleton is hip-centred (movement "
+                "across the crease is not shown). It is not validated biomechanics."
             )
         except Exception as error:  # noqa: BLE001 - never break the page
             st.warning(f"The 3D view could not be drawn: {error}")
