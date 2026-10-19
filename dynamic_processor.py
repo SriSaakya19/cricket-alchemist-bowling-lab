@@ -363,6 +363,16 @@ _SIDE_LANDMARKS = {
 }
 _VISIBILITY_THRESHOLD = 0.5
 
+# MediaPipe Pose skeleton connections (landmark index pairs), used by the 3D view
+POSE_CONNECTIONS_3D = [
+    (0, 1), (1, 2), (2, 3), (3, 7), (0, 4), (4, 5), (5, 6), (6, 8), (9, 10),
+    (11, 12), (11, 13), (13, 15), (15, 17), (15, 19), (15, 21), (17, 19),
+    (12, 14), (14, 16), (16, 18), (16, 20), (16, 22), (18, 20),
+    (11, 23), (12, 24), (23, 24),
+    (23, 25), (25, 27), (27, 29), (29, 31), (27, 31),
+    (24, 26), (26, 28), (28, 30), (30, 32), (28, 32),
+]
+
 
 def _visibility(landmarks, index: int) -> float:
     return float(getattr(landmarks[index], "visibility", 0.0) or 0.0)
@@ -376,7 +386,9 @@ def _choose_side(landmarks) -> str:
     return "right" if scores["right"] >= scores["left"] else "left"
 
 
-def _compute_angles(landmarks, width: int, height: int, side: str) -> Dict[str, float]:
+def _compute_angles(landmarks, width: float, height: float, side: str,
+                    use_depth: bool = False) -> Dict[str, float]:
+    """2D image-plane angles, or true 3D angles from world landmarks if use_depth."""
     ids = _SIDE_LANDMARKS[side]
     angles = {
         "wrist_angle_deg": float("nan"),
@@ -389,8 +401,10 @@ def _compute_angles(landmarks, width: int, height: int, side: str) -> Dict[str, 
     def visible(*names: str) -> bool:
         return all(_visibility(landmarks, ids[n]) >= _VISIBILITY_THRESHOLD for n in names)
 
-    def point(name: str) -> Tuple[float, float]:
+    def point(name: str):
         landmark = landmarks[ids[name]]
+        if use_depth:
+            return (landmark.x, landmark.y, landmark.z)
         return (landmark.x * width, landmark.y * height)
 
     # Wrist: elbow - wrist - index finger
@@ -517,6 +531,7 @@ def analyze_video(video_path: str, stride: int = 2, max_frames: int = 240) -> Di
 
         output_fps = float(min(max(fps / stride, 1.0), 60.0))
         rows = []
+        pose_3d_frames = []
         fallback_frames = []
         overlay_size: Optional[Tuple[int, int]] = None
         writer_error: Optional[str] = None
@@ -547,6 +562,14 @@ def analyze_video(video_path: str, stride: int = 2, max_frames: int = 240) -> Di
             detected = False
             visible_count = 0
             side = ""
+            pose_3d_frame = None
+            angles_3d = {
+                "wrist_angle_3d_deg": float("nan"),
+                "elbow_angle_3d_deg": float("nan"),
+                "shoulder_angle_3d_deg": float("nan"),
+                "knee_angle_3d_deg": float("nan"),
+                "hip_angle_3d_deg": float("nan"),
+            }
             angles = {
                 "wrist_angle_deg": float("nan"),
                 "elbow_angle_deg": float("nan"),
@@ -579,6 +602,25 @@ def analyze_video(video_path: str, stride: int = 2, max_frames: int = 240) -> Di
                     side = _choose_side(landmarks)
                     angles = _compute_angles(landmarks, frame_width, frame_height, side)
                     detected = True
+
+                    # Approximate 3D: MediaPipe world landmarks (metres, hip-centred)
+                    world = getattr(result, "pose_world_landmarks", None)
+                    if world is not None:
+                        try:
+                            world_landmarks = world.landmark
+                            pose_3d_frame = [
+                                [round(float(lm.x), 4), round(float(lm.y), 4), round(float(lm.z), 4)]
+                                for lm in world_landmarks
+                            ]
+                            raw_3d = _compute_angles(world_landmarks, 1.0, 1.0, side, use_depth=True)
+                            angles_3d = {
+                                name.replace("_deg", "_3d_deg"): value
+                                for name, value in raw_3d.items()
+                            }
+                        except Exception as exc_3d:  # noqa: BLE001 - 3D is optional
+                            pose_3d_frame = None
+                            logger.warning("3D landmark extraction failed on frame %d: %s",
+                                           current_index, exc_3d)
             except Exception as exc:  # noqa: BLE001 - counted and logged, not hidden
                 detected = False
                 side = ""
@@ -642,7 +684,13 @@ def analyze_video(video_path: str, stride: int = 2, max_frames: int = 240) -> Di
                 "shoulder_angle_deg": _round_or_nan(angles["shoulder_angle_deg"]),
                 "knee_angle_deg": _round_or_nan(angles["knee_angle_deg"]),
                 "hip_angle_deg": _round_or_nan(angles["hip_angle_deg"]),
+                "wrist_angle_3d_deg": _round_or_nan(angles_3d["wrist_angle_3d_deg"]),
+                "elbow_angle_3d_deg": _round_or_nan(angles_3d["elbow_angle_3d_deg"]),
+                "shoulder_angle_3d_deg": _round_or_nan(angles_3d["shoulder_angle_3d_deg"]),
+                "knee_angle_3d_deg": _round_or_nan(angles_3d["knee_angle_3d_deg"]),
+                "hip_angle_3d_deg": _round_or_nan(angles_3d["hip_angle_3d_deg"]),
             })
+            pose_3d_frames.append(pose_3d_frame)
             sampled_count += 1
 
         truncated = sampled_count >= max_frames and (total_frames <= 0 or frame_index < total_frames)
@@ -708,6 +756,9 @@ def analyze_video(video_path: str, stride: int = 2, max_frames: int = 240) -> Di
             "overlay_frames": [] if overlay_video_bytes else fallback_frames,
             "overlay_error": overlay_error,
             "overlay_info": overlay_info,
+            "pose_3d": pose_3d_frames,
+            "pose_3d_available": any(frame is not None for frame in pose_3d_frames),
+            "pose_connections": [list(pair) for pair in POSE_CONNECTIONS_3D],
             "fps": float(fps),
             "width": int(width),
             "height": int(height),
