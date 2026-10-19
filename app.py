@@ -8,6 +8,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 import streamlit.components.v1 as components
+from plotly.subplots import make_subplots
 
 from dynamic_processor import (
     SUPPORTED_EXTENSIONS,
@@ -16,6 +17,7 @@ from dynamic_processor import (
     analyze_video_bytes,
     convert_uploaded_video,
     find_ffmpeg,
+    render_3d_video,
 )
 
 # -------------------- PAGE CONFIG --------------------
@@ -399,19 +401,91 @@ def build_3d_readouts(df, frame_total):
     return readouts
 
 
-def build_3d_figure(display_poses, connections, sides, readouts, frame_ms):
+def build_3d_labels(df, frame_total):
+    """Plain-text angle lines per frame, drawn into the downloadable 3D video."""
+    fields = (
+        ("ELBOW", "elbow_angle_3d_deg"),
+        ("KNEE", "knee_angle_3d_deg"),
+        ("SHOULDER", "shoulder_angle_3d_deg"),
+        ("HIP", "hip_angle_3d_deg"),
+    )
+    labels = []
+    for index in range(frame_total):
+        row = df.iloc[index]
+        if not bool(row["pose_detected"]):
+            labels.append(["TRACKING LOST"])
+            continue
+        lines = []
+        for name, column in fields:
+            value = row[column]
+            lines.append(f"{name} {value:.0f} deg" if pd.notna(value) else f"{name} --")
+        labels.append(lines)
+    return labels
+
+
+def describe_camera_view(df):
     """
-    Animated Plotly 3D skeleton.
+    Summarise the estimated camera view from the per-frame view_yaw_deg values
+    (0 = front-on or behind-on, 90 = side-on) and say which measurements to trust.
+    """
+    yaw = df.loc[df["pose_detected"], "view_yaw_deg"].dropna()
+    if len(yaw) < 3:
+        return None
+    median = float(yaw.median())
+    low = float(yaw.quantile(0.1))
+    high = float(yaw.quantile(0.9))
+
+    if median < 30:
+        label = "Mostly front-on or behind-on view"
+        notes = [
+            "Better suited to: shoulder and hip alignment, lateral trunk tilt, "
+            "arm path and foot alignment.",
+            "Less reliable: knee and elbow bend. Those angles tend to open and "
+            "close toward the camera, so 2D readings are foreshortened.",
+        ]
+    elif median < 60:
+        label = "Semi-front (diagonal) view"
+        notes = [
+            "A diagonal view mixes both: alignment and joint bend are each "
+            "partly foreshortened.",
+            "Treat elbow, knee and trunk numbers as rough indicators, and compare "
+            "clips shot from the same camera position.",
+        ]
+    else:
+        label = "Mostly side-on view"
+        notes = [
+            "Better suited to: front-knee bend and brace, trunk lean, elbow "
+            "bend and posture through the delivery.",
+            "Less reliable: shoulder and hip alignment, lateral tilt, and the far "
+            "arm or leg, which may be hidden.",
+        ]
+    notes.append(
+        "Wrist angles are the least reliable from any single camera view because "
+        "the hand is small and often blurred."
+    )
+    notes.append(
+        "For the most trustworthy picture, film one side-on and one front-on clip "
+        "and compare the results."
+    )
+    return {"label": label, "median": median, "low": low, "high": high, "notes": notes}
+
+
+def build_3d_figure(display_poses, connections, sides, readouts, frame_ms,
+                    times, elbow_3d, elbow_2d, height=780):
+    """
+    Animated Plotly 3D skeleton with a synced elbow-angle graph underneath.
 
     MediaPipe world landmarks are in metres, hip-centred, with y pointing down,
     so they are re-mapped for plotting: x = left/right, y = depth, z = height.
     Left side = cyan, right side = coral, measured arm = gold, with a floor
-    shadow for depth, a translucent torso, a wrist trail and camera presets.
+    shadow for depth, a translucent torso, a wrist trail, camera presets and a
+    cursor that moves along the elbow graph while the skeleton plays.
     """
     frame_count = len(display_poses)
     arm_pairs = {"right": [(12, 14), (14, 16)], "left": [(11, 13), (13, 15)]}
     joint_ids = [0] + list(range(11, 33))
     trail_length = 40
+    graph_low, graph_high = 0, 190
 
     # Split connections into neutral / left / right (odd ids are left, even are right)
     neutral_pairs, left_pairs, right_pairs = [], [], []
@@ -430,10 +504,14 @@ def build_3d_figure(display_poses, connections, sides, readouts, frame_ms):
     ]
     valid = [pts for pts in plot_points if pts is not None]
     stacked = np.stack(valid)
-    half_x = float(np.clip(np.abs(stacked[:, :, 0]).max() * 1.15, 0.6, 1.6))
-    half_y = float(np.clip(np.abs(stacked[:, :, 1]).max() * 1.15, 0.6, 1.6))
-    z_low = float(stacked[:, :, 2].min() - 0.12)
-    z_high = float(stacked[:, :, 2].max() + 0.12)
+    half_x = float(np.clip(np.abs(stacked[:, :, 0]).max() * 1.1, 0.5, 1.6))
+    half_y = float(np.clip(np.abs(stacked[:, :, 1]).max() * 1.1, 0.5, 1.6))
+    z_low = float(stacked[:, :, 2].min() - 0.08)
+    z_high = float(stacked[:, :, 2].max() + 0.08)
+
+    time_low, time_high = float(min(times)), float(max(times))
+    if time_high - time_low < 1e-6:
+        time_high = time_low + 1.0
 
     empty = ([], [], [])
     empty_mesh = ([0.0] * 4, [0.0] * 4, [0.0] * 4)
@@ -481,6 +559,12 @@ def build_3d_figure(display_poses, connections, sides, readouts, frame_ms):
             trail,
         ]
 
+    def cursor_traces(index):
+        moment = float(times[index])
+        value = elbow_3d[index]
+        marker = ([moment], [value]) if value is not None else ([], [])
+        return [marker, ([moment, moment], [graph_low, graph_high])]
+
     def readout_annotation(index):
         return [dict(
             text=readouts[index], xref="paper", yref="paper",
@@ -492,47 +576,86 @@ def build_3d_figure(display_poses, connections, sides, readouts, frame_ms):
 
     first = next(i for i in range(frame_count) if plot_points[i] is not None)
     t0 = frame_traces(first)
+    c0 = cursor_traces(first)
 
-    figure = go.Figure(
-        data=[
-            go.Scatter3d(x=t0[0][0], y=t0[0][1], z=t0[0][2], mode="lines",
-                         line=dict(color="#B8CCE0", width=6), hoverinfo="skip"),
-            go.Scatter3d(x=t0[1][0], y=t0[1][1], z=t0[1][2], mode="lines",
-                         line=dict(color="#4CC1FF", width=8), hoverinfo="skip"),
-            go.Scatter3d(x=t0[2][0], y=t0[2][1], z=t0[2][2], mode="lines",
-                         line=dict(color="#FF7F96", width=8), hoverinfo="skip"),
-            go.Scatter3d(x=t0[3][0], y=t0[3][1], z=t0[3][2], mode="lines",
-                         line=dict(color="#FFD16D", width=13), hoverinfo="skip"),
-            go.Scatter3d(x=t0[4][0], y=t0[4][1], z=t0[4][2], mode="markers",
-                         marker=dict(size=[14] + [5] * (len(joint_ids) - 1),
-                                     color="#FFFFFF",
-                                     line=dict(color="#0A1828", width=1)),
-                         hoverinfo="skip"),
-            go.Mesh3d(x=t0[5][0], y=t0[5][1], z=t0[5][2],
-                      i=[0, 0], j=[1, 2], k=[2, 3],
-                      color="#7FB8E6", opacity=0.35, flatshading=True,
-                      hoverinfo="skip"),
-            go.Scatter3d(x=t0[6][0], y=t0[6][1], z=t0[6][2], mode="lines",
-                         line=dict(color="rgba(130,170,210,0.28)", width=6),
-                         hoverinfo="skip"),
-            go.Scatter3d(x=t0[7][0], y=t0[7][1], z=t0[7][2], mode="lines",
-                         line=dict(color="rgba(255,209,109,0.65)", width=4),
-                         hoverinfo="skip"),
-        ],
-        frames=[
-            go.Frame(
-                name=str(i),
-                traces=list(range(8)),
-                data=[
-                    go.Mesh3d(x=part[0], y=part[1], z=part[2]) if n == 5
-                    else go.Scatter3d(x=part[0], y=part[1], z=part[2])
-                    for n, part in enumerate(frame_traces(i))
-                ],
-                layout=dict(annotations=readout_annotation(i)),
-            )
-            for i in range(frame_count)
-        ],
+    figure = make_subplots(
+        rows=2, cols=1,
+        specs=[[{"type": "scene"}], [{"type": "xy"}]],
+        row_heights=[0.8, 0.2],
+        vertical_spacing=0.04,
     )
+
+    first_row_traces = [
+        go.Scatter3d(x=t0[0][0], y=t0[0][1], z=t0[0][2], mode="lines",
+                     line=dict(color="#B8CCE0", width=6), hoverinfo="skip",
+                     showlegend=False),
+        go.Scatter3d(x=t0[1][0], y=t0[1][1], z=t0[1][2], mode="lines",
+                     line=dict(color="#4CC1FF", width=8), hoverinfo="skip",
+                     showlegend=False),
+        go.Scatter3d(x=t0[2][0], y=t0[2][1], z=t0[2][2], mode="lines",
+                     line=dict(color="#FF7F96", width=8), hoverinfo="skip",
+                     showlegend=False),
+        go.Scatter3d(x=t0[3][0], y=t0[3][1], z=t0[3][2], mode="lines",
+                     line=dict(color="#FFD16D", width=13), hoverinfo="skip",
+                     showlegend=False),
+        go.Scatter3d(x=t0[4][0], y=t0[4][1], z=t0[4][2], mode="markers",
+                     marker=dict(size=[14] + [5] * (len(joint_ids) - 1),
+                                 color="#FFFFFF",
+                                 line=dict(color="#0A1828", width=1)),
+                     hoverinfo="skip", showlegend=False),
+        go.Mesh3d(x=t0[5][0], y=t0[5][1], z=t0[5][2],
+                  i=[0, 0], j=[1, 2], k=[2, 3],
+                  color="#7FB8E6", opacity=0.35, flatshading=True,
+                  hoverinfo="skip", showlegend=False),
+        go.Scatter3d(x=t0[6][0], y=t0[6][1], z=t0[6][2], mode="lines",
+                     line=dict(color="rgba(130,170,210,0.28)", width=6),
+                     hoverinfo="skip", showlegend=False),
+        go.Scatter3d(x=t0[7][0], y=t0[7][1], z=t0[7][2], mode="lines",
+                     line=dict(color="rgba(255,209,109,0.65)", width=4),
+                     hoverinfo="skip", showlegend=False),
+    ]
+    for trace in first_row_traces:
+        figure.add_trace(trace, row=1, col=1)
+
+    # trace 8 and 9: the full elbow graph (static); 10 and 11: the moving cursor
+    figure.add_trace(
+        go.Scatter(x=list(times), y=list(elbow_3d), mode="lines",
+                   name="Elbow (3D estimate)", connectgaps=False,
+                   line=dict(color="#4CC1FF", width=3), hoverinfo="skip"),
+        row=2, col=1)
+    figure.add_trace(
+        go.Scatter(x=list(times), y=list(elbow_2d), mode="lines",
+                   name="Elbow (2D image)", connectgaps=False,
+                   line=dict(color="rgba(184,204,224,0.6)", width=2, dash="dot"),
+                   hoverinfo="skip"),
+        row=2, col=1)
+    figure.add_trace(
+        go.Scatter(x=c0[0][0], y=c0[0][1], mode="markers",
+                   marker=dict(size=11, color="#FFD16D",
+                               line=dict(color="#FFFFFF", width=1)),
+                   hoverinfo="skip", showlegend=False),
+        row=2, col=1)
+    figure.add_trace(
+        go.Scatter(x=c0[1][0], y=c0[1][1], mode="lines",
+                   line=dict(color="rgba(255,209,109,0.85)", width=2),
+                   hoverinfo="skip", showlegend=False),
+        row=2, col=1)
+
+    animated_traces = list(range(8)) + [10, 11]
+    figure.frames = [
+        go.Frame(
+            name=str(i),
+            traces=animated_traces,
+            data=[
+                go.Mesh3d(x=part[0], y=part[1], z=part[2]) if n == 5
+                else go.Scatter3d(x=part[0], y=part[1], z=part[2]) if n < 8
+                else go.Scatter(x=part[0], y=part[1])
+                for n, part in enumerate(frame_traces(i) + cursor_traces(i))
+            ],
+            layout=dict(annotations=readout_annotation(i)),
+        )
+        for i in range(frame_count)
+    ]
 
     axis_style = dict(
         showbackground=False,
@@ -543,26 +666,40 @@ def build_3d_figure(display_poses, connections, sides, readouts, frame_ms):
     )
     up = dict(x=0, y=0, z=1)
     camera_buttons = [
-        ("3/4 view", dict(x=1.6, y=-1.8, z=0.7)),
-        ("Side-on", dict(x=2.4, y=0.0, z=0.35)),
-        ("Front", dict(x=0.0, y=-2.4, z=0.35)),
-        ("Top", dict(x=0.0, y=-0.2, z=2.6)),
+        ("3/4 view", dict(x=1.15, y=-1.3, z=0.5)),
+        ("Side-on", dict(x=1.7, y=0.0, z=0.25)),
+        ("Front", dict(x=0.0, y=-1.7, z=0.25)),
+        ("Top", dict(x=0.0, y=-0.15, z=1.9)),
     ]
 
+    figure.update_xaxes(
+        row=2, col=1, title_text="Time (s)", range=[time_low, time_high],
+        gridcolor="#1E3550", zeroline=False, color="#C2D0E2", tickfont=dict(size=10),
+    )
+    figure.update_yaxes(
+        row=2, col=1, title_text="Elbow (°)", range=[graph_low, graph_high],
+        dtick=60, gridcolor="#1E3550", zeroline=False, color="#C2D0E2",
+        tickfont=dict(size=10), automargin=True,
+    )
+
     figure.update_layout(
-        height=640,
-        showlegend=False,
+        height=height,
+        showlegend=True,
+        legend=dict(orientation="h", x=0.0, y=0.205, yanchor="bottom",
+                    font=dict(size=11, color="#F2F7FF"), bgcolor="rgba(0,0,0,0)"),
         uirevision="skeleton3d",
         paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(5,16,30,0.6)",
         font_color="#F2F7FF",
-        margin=dict(l=0, r=0, t=0, b=0),
+        margin=dict(l=10, r=10, t=0, b=0),
         annotations=readout_annotation(first),
         scene=dict(
             xaxis=dict(title="Left–right (m)", range=[-half_x, half_x], **axis_style),
             yaxis=dict(title="Depth (m)", range=[-half_y, half_y], **axis_style),
             zaxis=dict(title="Height (m)", range=[z_low, z_high], **axis_style),
             aspectmode="data",
-            camera=dict(eye=camera_buttons[0][1], up=up),
+            camera=dict(eye=camera_buttons[0][1], up=up,
+                        center=dict(x=0, y=0, z=-0.03)),
         ),
         updatemenus=[
             dict(
@@ -808,6 +945,31 @@ with settings[1]:
         index=1,
     )
 
+with st.expander("🎥 FILMING TIPS: BEST CAMERA ANGLE"):
+    st.markdown(
+        """
+**Which angle should I film from?** It depends on what you want to measure, because a
+single camera only sees angles that happen across its view.
+
+- **Front-on (from the batter's end) or behind the bowler:** best for shoulder and hip
+  alignment, lateral trunk tilt, arm path and foot alignment. Knee and elbow bend are
+  foreshortened.
+- **Side-on (camera at right angles to the run-up):** best for front-knee bend and brace,
+  trunk lean and elbow bend. Alignment and tilt are harder to read, and the far arm can
+  be hidden.
+- **Best of both:** film one side-on and one front-on clip of the same spell and analyse
+  each one separately.
+
+**Quick setup checklist**
+
+- Keep the camera on a tripod, static, at about chest height.
+- Keep the whole body in frame from run-up to follow-through, with space around the bowler.
+- Use good light and a plain background, and avoid people crossing the frame.
+- Use 50 to 60 fps if your phone offers it, so fast arm movement is less blurred.
+- One bowler per clip, and keep the same camera position when comparing deliveries.
+"""
+    )
+
 if find_ffmpeg() is None:
     st.error(
         "FFmpeg is not installed, so videos cannot be converted for playback. "
@@ -927,7 +1089,9 @@ if analysis is not None:
         "hip_angle_3d_deg",
     ]
     numeric_columns = (
-        ["frame", "time_seconds", "visible_landmarks"] + angle_columns + angle_3d_columns
+        ["frame", "time_seconds", "visible_landmarks", "view_yaw_deg"]
+        + angle_columns
+        + angle_3d_columns
     )
 
     # Defensive normalisation: missing columns, NaN values, wrong dtypes
@@ -946,7 +1110,8 @@ if analysis is not None:
         df["time_seconds"] = [float(i) for i in range(len(df))]
 
     df = df[
-        ["frame", "time_seconds", "pose_detected", "measured_side", "visible_landmarks"]
+        ["frame", "time_seconds", "pose_detected", "measured_side", "visible_landmarks",
+         "view_yaw_deg"]
         + angle_columns
         + angle_3d_columns
     ].reset_index(drop=True)
@@ -1020,13 +1185,40 @@ if analysis is not None:
             "and are marked as 'pose not detected'."
         )
 
-    # -------------------- VIDEO COMPARISON --------------------
+    # -------------------- CAMERA VIEW CHECK --------------------
 
-    st.markdown("### ORIGINAL VIDEO VS SKELETON")
+    st.markdown("### CAMERA VIEW CHECK")
 
-    original_col, skeleton_col = st.columns(2, gap="medium")
+    view_info = describe_camera_view(df)
+    if view_info is None:
+        st.info(
+            "The camera view could not be estimated because the shoulders and hips "
+            "were rarely visible."
+        )
+    else:
+        view_items = "".join(f"<li>{html.escape(note)}</li>" for note in view_info["notes"])
+        st.markdown(
+            f"""
+<div class="panel">
+<h3>{html.escape(view_info["label"].upper())}</h3>
+<div class="muted">Estimated from the angle between the shoulder and hip line and the
+image plane: median {view_info["median"]:.0f}° (middle 80% of frames
+{view_info["low"]:.0f}° to {view_info["high"]:.0f}°). 0° means front-on or behind-on,
+90° means side-on. This is a rough estimate from a single camera, and the view changes
+as the bowler turns.</div>
+<ul>{view_items}</ul>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
 
-    with original_col:
+    # -------------------- ORIGINAL / SKELETON / 3D REVIEW --------------------
+
+    pose_3d = analysis.get("pose_3d") or []
+    pose_connections = analysis.get("pose_connections") or []
+    has_3d = bool([frame for frame in pose_3d if frame] and pose_connections)
+
+    def render_original_panel():
         st.markdown(
             '<div class="panel"><h3>ORIGINAL DELIVERY</h3></div>',
             unsafe_allow_html=True,
@@ -1045,7 +1237,7 @@ if analysis is not None:
                 "the saved analysis."
             )
 
-    with skeleton_col:
+    def render_skeleton_panel():
         st.markdown(
             '<div class="panel"><h3>POSE-SKELETON REPLAY</h3></div>',
             unsafe_allow_html=True,
@@ -1106,20 +1298,12 @@ if analysis is not None:
                 + (f" Reason: {analysis.get('overlay_error')}" if analysis.get("overlay_error") else "")
             )
 
-    # -------------------- 3D SKELETON --------------------
-
-    st.markdown("### 3D SKELETON REPLAY (APPROXIMATE)")
-
-    pose_3d = analysis.get("pose_3d") or []
-    pose_connections = analysis.get("pose_connections") or []
-    usable_3d = [frame for frame in pose_3d if frame]
-
-    if not usable_3d or not pose_connections:
-        st.info(
-            "No 3D landmarks were available for this clip, so the 3D view "
-            "cannot be shown. Try a clip with the whole bowler visible."
+    def render_3d_panel(view_height):
+        st.markdown(
+            '<div class="panel"><h3>3D SKELETON REPLAY (APPROXIMATE)</h3></div>',
+            unsafe_allow_html=True,
         )
-    else:
+
         frame_total = min(len(pose_3d), len(df))
         side_list = df["measured_side"].tolist()[:frame_total]
         try:
@@ -1127,27 +1311,112 @@ if analysis is not None:
             stride_value = int(analysis.get("stride") or 1)
         except (TypeError, ValueError):
             fps_value, stride_value = 25.0, 1
-        frame_ms = int(min(max(1000.0 * stride_value / max(fps_value, 1.0), 30), 250))
+        playback_fps = max(fps_value / max(stride_value, 1), 1.0)
+        frame_ms = int(min(max(1000.0 / playback_fps, 30), 250))
+
+        def clean(values):
+            return [None if pd.isna(value) else float(value) for value in values]
 
         try:
             display_poses = prepare_3d_display(pose_3d[:frame_total])
-            readout_list = build_3d_readouts(df, frame_total)
             figure_3d = build_3d_figure(
-                display_poses, pose_connections, side_list, readout_list, frame_ms
+                display_poses,
+                pose_connections,
+                side_list,
+                build_3d_readouts(df, frame_total),
+                frame_ms,
+                [
+                    float(value) if pd.notna(value) else float(index)
+                    for index, value in enumerate(df["time_seconds"].tolist()[:frame_total])
+                ],
+                clean(df["elbow_angle_3d_deg"].tolist()[:frame_total]),
+                clean(df["elbow_angle_deg"].tolist()[:frame_total]),
+                view_height,
             )
             call_stretch(st.plotly_chart, figure_3d, key="chart_3d_skeleton")
             st.caption(
                 "Drag to rotate, scroll to zoom, use the view buttons (3/4, Side-on, "
                 "Front, Top), then Play or Slow-mo. Cyan is the left side, coral the "
-                "right side, gold the measured arm with its wrist trail. The grey "
-                "shadow on the floor helps judge depth. For display only, the pose is "
-                "lightly smoothed and held through very short tracking gaps; the CSV "
-                "keeps raw values. This 3D pose is estimated from a single camera, so "
-                "depth is approximate and the skeleton is hip-centred (movement "
-                "across the crease is not shown). It is not validated biomechanics."
+                "right side, gold the measured arm with its wrist trail, and the grey "
+                "shadow on the floor helps judge depth. The gold cursor on the elbow "
+                "graph moves with the skeleton. For display only, the pose is lightly "
+                "smoothed and held through very short tracking gaps; the CSV keeps raw "
+                "values. This 3D pose is estimated from a single camera, so depth is "
+                "approximate and the skeleton is hip-centred (movement across the "
+                "crease is not shown). It is not validated biomechanics."
             )
         except Exception as error:  # noqa: BLE001 - never break the page
             st.warning(f"The 3D view could not be drawn: {error}")
+            return
+
+        st.markdown("#### 3D VIDEO")
+        video_view_label = st.radio(
+            "Camera for the 3D video",
+            ["Rotating", "Side-on", "Front"],
+            horizontal=True,
+            key="video3d_view",
+        )
+        if call_stretch(st.button, "🎬 CREATE 3D VIDEO", key="make_3d_video"):
+            try:
+                with st.spinner("Rendering the 3D video..."):
+                    video_bytes = render_3d_video(
+                        display_poses,
+                        pose_connections,
+                        side_list,
+                        build_3d_labels(df, frame_total),
+                        playback_fps,
+                        view={"Rotating": "rotate", "Side-on": "side", "Front": "front"}[
+                            video_view_label
+                        ],
+                    )
+                analysis["video_3d"] = {"bytes": video_bytes, "view": video_view_label}
+            except ProcessorError as error:
+                st.error(f"Could not create the 3D video: {error}")
+            except Exception as error:  # noqa: BLE001 - shown to the user
+                st.error(f"Unexpected error while creating the 3D video: {error}")
+
+        stored_3d = analysis.get("video_3d")
+        if stored_3d and stored_3d.get("bytes"):
+            st.caption(f"3D video ({stored_3d.get('view', '')} camera)")
+            show_video(stored_3d["bytes"], 960, 720)
+            download_link(
+                "⬇ DOWNLOAD 3D VIDEO",
+                stored_3d["bytes"],
+                "cricket_alchemist_3d.mp4",
+                "video/mp4",
+            )
+
+    if has_3d:
+        st.markdown("### ORIGINAL VS SKELETON VS 3D")
+
+        size_label = st.select_slider(
+            "3D view size",
+            options=["Compact", "Large", "Extra large"],
+            value="Large",
+            key="view3d_size",
+        )
+        view_height = {"Compact": 600, "Large": 800, "Extra large": 960}[size_label]
+
+        video_col, view_col = st.columns([1, 1.6], gap="medium")
+        with video_col:
+            render_original_panel()
+            render_skeleton_panel()
+        with view_col:
+            render_3d_panel(view_height)
+    else:
+        st.markdown("### ORIGINAL VIDEO VS SKELETON")
+
+        original_col, skeleton_col = st.columns(2, gap="medium")
+        with original_col:
+            render_original_panel()
+        with skeleton_col:
+            render_skeleton_panel()
+
+        st.markdown("### 3D SKELETON REPLAY (APPROXIMATE)")
+        st.info(
+            "No 3D landmarks were available for this clip, so the 3D view "
+            "cannot be shown. Try a clip with the whole bowler visible."
+        )
 
     # -------------------- JOINT ANGLES --------------------
 
