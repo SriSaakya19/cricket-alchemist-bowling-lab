@@ -4,6 +4,7 @@ import html
 
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 import streamlit.components.v1 as components
 
@@ -342,6 +343,125 @@ def style_figure(figure):
     return figure
 
 
+def build_3d_figure(pose_3d, connections, sides, times, frame_ms):
+    """
+    Animated Plotly 3D skeleton. MediaPipe world landmarks are in metres,
+    hip-centred, with y pointing down, so they are re-mapped for plotting:
+    x = left/right, y = depth, z = height.
+    """
+    frame_count = len(pose_3d)
+    arm_pairs = {"right": [(12, 14), (14, 16)], "left": [(11, 13), (13, 15)]}
+    joint_ids = [0] + list(range(11, 33))
+    empty = ([], [], [])
+
+    def segments(points, pairs):
+        xs, ys, zs = [], [], []
+        for a, b in pairs:
+            xs += [points[a][0], points[b][0], None]
+            ys += [points[a][1], points[b][1], None]
+            zs += [points[a][2], points[b][2], None]
+        return xs, ys, zs
+
+    def frame_data(index):
+        frame = pose_3d[index]
+        if not frame or len(frame) < 33:
+            return empty, empty, empty
+        points = [(p[0], p[2], -p[1]) for p in frame]
+        body = segments(points, connections)
+        arm = segments(points, arm_pairs.get(sides[index], []))
+        joints = (
+            [points[i][0] for i in joint_ids],
+            [points[i][1] for i in joint_ids],
+            [points[i][2] for i in joint_ids],
+        )
+        return body, arm, joints
+
+    first = next((i for i in range(frame_count) if pose_3d[i]), 0)
+    body0, arm0, joints0 = frame_data(first)
+
+    figure = go.Figure(
+        data=[
+            go.Scatter3d(x=body0[0], y=body0[1], z=body0[2], mode="lines",
+                         line=dict(color="#4CC1FF", width=5), hoverinfo="skip"),
+            go.Scatter3d(x=arm0[0], y=arm0[1], z=arm0[2], mode="lines",
+                         line=dict(color="#FFD16D", width=10), hoverinfo="skip"),
+            go.Scatter3d(x=joints0[0], y=joints0[1], z=joints0[2], mode="markers",
+                         marker=dict(size=4, color="#FFFFFF"), hoverinfo="skip"),
+        ],
+        frames=[
+            go.Frame(
+                name=str(i),
+                traces=[0, 1, 2],
+                data=[
+                    go.Scatter3d(x=part[0], y=part[1], z=part[2])
+                    for part in frame_data(i)
+                ],
+            )
+            for i in range(frame_count)
+        ],
+    )
+
+    axis_style = dict(
+        range=[-1.1, 1.1],
+        backgroundcolor="rgba(5,16,30,0.9)",
+        gridcolor="#294968",
+        zerolinecolor="#4A6F93",
+        showbackground=True,
+        color="#F2F7FF",
+    )
+    figure.update_layout(
+        height=620,
+        showlegend=False,
+        paper_bgcolor="rgba(0,0,0,0)",
+        font_color="#F2F7FF",
+        margin=dict(l=0, r=0, t=10, b=0),
+        scene=dict(
+            xaxis=dict(title="Left–right (m)", **axis_style),
+            yaxis=dict(title="Depth (m)", **axis_style),
+            zaxis=dict(title="Height (m)", **axis_style),
+            aspectmode="cube",
+            camera=dict(eye=dict(x=1.5, y=-1.7, z=0.7)),
+        ),
+        updatemenus=[dict(
+            type="buttons",
+            showactive=False,
+            direction="left",
+            x=0.0, y=0.0, xanchor="left", yanchor="top",
+            pad=dict(t=45, r=10),
+            bgcolor="#E8B54F",
+            font=dict(color="#101827"),
+            buttons=[
+                dict(label="▶ Play", method="animate",
+                     args=[None, dict(frame=dict(duration=frame_ms, redraw=True),
+                                      transition=dict(duration=0),
+                                      fromcurrent=True, mode="immediate")]),
+                dict(label="⏸ Pause", method="animate",
+                     args=[[None], dict(frame=dict(duration=0, redraw=False),
+                                        transition=dict(duration=0),
+                                        mode="immediate")]),
+            ],
+        )],
+        sliders=[dict(
+            active=0,
+            x=0.22, len=0.76, y=0, yanchor="top",
+            pad=dict(t=40, b=10),
+            currentvalue=dict(prefix="Time (s): ", font=dict(color="#FFD16D")),
+            font=dict(color="rgba(0,0,0,0)"),  # hide per-step labels, keep the current value
+            steps=[
+                dict(
+                    method="animate",
+                    label=f"{times[i]:.2f}",
+                    args=[[str(i)], dict(mode="immediate",
+                                         frame=dict(duration=0, redraw=True),
+                                         transition=dict(duration=0))],
+                )
+                for i in range(frame_count)
+            ],
+        )],
+    )
+    return figure
+
+
 def build_coaching_notes(df, detection_pct):
     """Concise, non-diagnostic review notes derived from the measurements."""
     notes = []
@@ -498,7 +618,7 @@ for col, (tag, title, description) in zip(features, feature_info):
 
 with st.expander("IMPORTANT: MEASUREMENT LIMITATIONS"):
     st.write(
-        "This prototype estimates 2D pose landmarks from a single camera. "
+        "This prototype estimates pose landmarks, including an approximate 3D view, from a single camera. "
         "It does not provide validated 3D biomechanics, reliable ball speed, "
         "injury prediction or official bowling-action legality. "
         "A coach should verify findings against the original video."
@@ -642,7 +762,16 @@ if analysis is not None:
         "knee_angle_deg",
         "hip_angle_deg",
     ]
-    numeric_columns = ["frame", "time_seconds", "visible_landmarks"] + angle_columns
+    angle_3d_columns = [
+        "wrist_angle_3d_deg",
+        "elbow_angle_3d_deg",
+        "shoulder_angle_3d_deg",
+        "knee_angle_3d_deg",
+        "hip_angle_3d_deg",
+    ]
+    numeric_columns = (
+        ["frame", "time_seconds", "visible_landmarks"] + angle_columns + angle_3d_columns
+    )
 
     # Defensive normalisation: missing columns, NaN values, wrong dtypes
     for column in numeric_columns:
@@ -662,6 +791,7 @@ if analysis is not None:
     df = df[
         ["frame", "time_seconds", "pose_detected", "measured_side", "visible_landmarks"]
         + angle_columns
+        + angle_3d_columns
     ].reset_index(drop=True)
 
     try:
@@ -819,6 +949,48 @@ if analysis is not None:
                 + (f" Reason: {analysis.get('overlay_error')}" if analysis.get("overlay_error") else "")
             )
 
+    # -------------------- 3D SKELETON --------------------
+
+    st.markdown("### 3D SKELETON REPLAY (APPROXIMATE)")
+
+    pose_3d = analysis.get("pose_3d") or []
+    pose_connections = analysis.get("pose_connections") or []
+    usable_3d = [frame for frame in pose_3d if frame]
+
+    if not usable_3d or not pose_connections:
+        st.info(
+            "No 3D landmarks were available for this clip, so the 3D view "
+            "cannot be shown. Try a clip with the whole bowler visible."
+        )
+    else:
+        frame_total = min(len(pose_3d), len(df))
+        side_list = df["measured_side"].tolist()[:frame_total]
+        time_list = [
+            float(value) if pd.notna(value) else float(index)
+            for index, value in enumerate(df["time_seconds"].tolist()[:frame_total])
+        ]
+        try:
+            fps_value = float(analysis.get("fps") or 25.0)
+            stride_value = int(analysis.get("stride") or 1)
+        except (TypeError, ValueError):
+            fps_value, stride_value = 25.0, 1
+        frame_ms = int(min(max(1000.0 * stride_value / max(fps_value, 1.0), 30), 250))
+
+        try:
+            figure_3d = build_3d_figure(
+                pose_3d[:frame_total], pose_connections, side_list, time_list, frame_ms
+            )
+            call_stretch(st.plotly_chart, figure_3d, key="chart_3d_skeleton")
+            st.caption(
+                "Drag to rotate, scroll to zoom, press Play or use the slider. "
+                "Gold marks the measured arm. This 3D pose is estimated from a single "
+                "camera, so depth is approximate and the skeleton is hip-centred "
+                "(movement across the crease is not shown). It is not validated "
+                "biomechanics."
+            )
+        except Exception as error:  # noqa: BLE001 - never break the page
+            st.warning(f"The 3D view could not be drawn: {error}")
+
     # -------------------- JOINT ANGLES --------------------
 
     st.markdown("### JOINT-ANGLE SNAPSHOT")
@@ -872,6 +1044,37 @@ if analysis is not None:
         fig.update_traces(line_width=3)
         call_stretch(st.plotly_chart, style_figure(fig), key=f"chart_{column}")
 
+    # -------------------- 2D VS 3D COMPARISON --------------------
+
+    for column_2d, column_3d, joint_name in (
+        ("elbow_angle_deg", "elbow_angle_3d_deg", "ELBOW"),
+        ("knee_angle_deg", "knee_angle_3d_deg", "KNEE"),
+    ):
+        compare_data = df[["time_seconds", column_2d, column_3d]]
+        if not compare_data[[column_2d, column_3d]].notna().to_numpy().any():
+            continue
+        compare_fig = px.line(
+            compare_data,
+            x="time_seconds",
+            y=[column_2d, column_3d],
+            title=f"{joint_name}: 2D IMAGE VS APPROXIMATE 3D ANGLE",
+            labels={
+                "time_seconds": "Time (seconds)",
+                "value": "Estimated angle (degrees)",
+                "variable": "Source",
+            },
+            template="plotly_dark",
+        )
+        compare_fig.for_each_trace(
+            lambda trace, c2=column_2d: trace.update(
+                name="2D image" if trace.name == c2 else "3D estimate"
+            )
+        )
+        compare_fig.update_traces(line_width=3)
+        call_stretch(
+            st.plotly_chart, style_figure(compare_fig), key=f"chart_compare_{column_2d}"
+        )
+
     # -------------------- VISIBILITY GRAPH --------------------
 
     visibility_data = df[["time_seconds", "visible_landmarks"]].dropna()
@@ -898,7 +1101,9 @@ if analysis is not None:
         st.info("There are no sampled measurements to display.")
     else:
         display_df = df.copy()
-        display_df[angle_columns] = display_df[angle_columns].round(1)
+        display_df[angle_columns + angle_3d_columns] = display_df[
+            angle_columns + angle_3d_columns
+        ].round(1)
         call_stretch(st.dataframe, display_df, hide_index=True)
 
     # -------------------- CSV EXPORT --------------------
