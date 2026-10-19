@@ -425,6 +425,29 @@ def _compute_angles(landmarks, width: float, height: float, side: str,
     return angles
 
 
+def _estimate_view_yaw(world_landmarks) -> float:
+    """
+    Rough camera-view estimate from MediaPipe world landmarks.
+
+    Returns the angle (0-90 degrees) between the body's shoulder/hip line and
+    the image plane: about 0 means the bowler faces or turns away from the
+    camera (front-on / behind), about 90 means side-on. Returns NaN when the
+    four trunk landmarks are not clearly visible.
+    """
+    angles = []
+    for left_id, right_id in ((11, 12), (23, 24)):
+        left, right = world_landmarks[left_id], world_landmarks[right_id]
+        if min(_visibility(world_landmarks, left_id),
+               _visibility(world_landmarks, right_id)) < _VISIBILITY_THRESHOLD:
+            continue
+        dx = abs(float(right.x) - float(left.x))
+        dz = abs(float(right.z) - float(left.z))
+        if dx + dz < 1e-6:
+            continue
+        angles.append(float(np.degrees(np.arctan2(dz, dx))))
+    return float(np.mean(angles)) if angles else float("nan")
+
+
 def _round_or_nan(value: float) -> float:
     return round(float(value), 2) if np.isfinite(value) else float("nan")
 
@@ -563,6 +586,7 @@ def analyze_video(video_path: str, stride: int = 2, max_frames: int = 240) -> Di
             visible_count = 0
             side = ""
             pose_3d_frame = None
+            view_yaw = float("nan")
             angles_3d = {
                 "wrist_angle_3d_deg": float("nan"),
                 "elbow_angle_3d_deg": float("nan"),
@@ -612,6 +636,7 @@ def analyze_video(video_path: str, stride: int = 2, max_frames: int = 240) -> Di
                                 [round(float(lm.x), 4), round(float(lm.y), 4), round(float(lm.z), 4)]
                                 for lm in world_landmarks
                             ]
+                            view_yaw = _estimate_view_yaw(world_landmarks)
                             raw_3d = _compute_angles(world_landmarks, 1.0, 1.0, side, use_depth=True)
                             angles_3d = {
                                 name.replace("_deg", "_3d_deg"): value
@@ -679,6 +704,7 @@ def analyze_video(video_path: str, stride: int = 2, max_frames: int = 240) -> Di
                 "pose_detected": bool(detected),
                 "measured_side": side,
                 "visible_landmarks": int(visible_count),
+                "view_yaw_deg": _round_or_nan(view_yaw),
                 "wrist_angle_deg": _round_or_nan(angles["wrist_angle_deg"]),
                 "elbow_angle_deg": _round_or_nan(angles["elbow_angle_deg"]),
                 "shoulder_angle_deg": _round_or_nan(angles["shoulder_angle_deg"]),
@@ -772,4 +798,206 @@ def analyze_video(video_path: str, stride: int = 2, max_frames: int = 240) -> Di
             "max_frames": max_frames,
         }
     finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+# --------------------------------------------------------------------------
+# 3D skeleton video (rendered with OpenCV, encoded with FFmpeg)
+# --------------------------------------------------------------------------
+def render_3d_video(
+    poses,
+    connections,
+    sides,
+    labels,
+    fps: float,
+    view: str = "rotate",
+    size: Tuple[int, int] = (960, 720),
+) -> bytes:
+    """
+    Render the approximate 3D skeleton to a browser-compatible H.264 MP4.
+
+    poses        list of (33, 3) arrays in MediaPipe world coordinates, or None
+    connections  landmark index pairs to draw
+    sides        measured side per frame ("left", "right" or "")
+    labels       list of text-line lists drawn top-right for each frame
+    fps          playback frames per second of the sampled frames
+    view         "rotate" (slow turntable), "side" or "front"
+    """
+    if not poses or all(pose is None for pose in poses):
+        raise ProcessorError("There are no 3D poses to render.")
+    if find_ffmpeg() is None:
+        raise FFmpegNotFoundError(FFMPEG_MISSING_MESSAGE)
+
+    width = max(320, int(size[0]) - int(size[0]) % 2)
+    height = max(240, int(size[1]) - int(size[1]) % 2)
+    fps_out = float(min(max(float(fps), 1.0), 60.0))
+
+    # plot coordinates: x = left/right, y = depth, z = height (MediaPipe y points down)
+    points_list = [
+        None if pose is None
+        else np.column_stack([pose[:, 0], pose[:, 2], -pose[:, 1]])
+        for pose in poses
+    ]
+    stacked = np.stack([pts for pts in points_list if pts is not None])
+    radius = max(float(np.sqrt(stacked[:, :, 0] ** 2 + stacked[:, :, 1] ** 2).max()), 0.3)
+    z_min = float(stacked[:, :, 2].min())
+    z_max = float(stacked[:, :, 2].max())
+
+    pitch = np.radians(14.0)
+    cos_p, sin_p = float(np.cos(pitch)), float(np.sin(pitch))
+    span_up = (z_max - z_min) * cos_p + 2.0 * radius * sin_p
+    scale = min(0.80 * height / span_up, 0.84 * width / (2.0 * radius))
+    center_x = width / 2.0
+    center_y = height / 2.0 + 0.03 * height
+    center_up = (z_min + z_max) / 2.0 * cos_p
+
+    ui = height / 720.0
+    colours = {
+        "neutral": (224, 204, 184),   # BGR
+        "left": (255, 193, 76),
+        "right": (150, 127, 255),
+        "gold": (109, 209, 255),
+        "white": (255, 255, 255),
+        "floor": (96, 76, 54),
+        "shadow": (120, 96, 72),
+        "torso": (230, 184, 127),
+    }
+
+    neutral_pairs, left_pairs, right_pairs = [], [], []
+    for a, b in connections:
+        if a >= 11 and b >= 11 and a % 2 == 1 and b % 2 == 1:
+            left_pairs.append((a, b))
+        elif a >= 11 and b >= 11 and a % 2 == 0 and b % 2 == 0:
+            right_pairs.append((a, b))
+        else:
+            neutral_pairs.append((a, b))
+    arm_pairs = {"right": [(12, 14), (14, 16)], "left": [(11, 13), (13, 15)]}
+
+    # Background: vertical navy gradient (same palette as the app)
+    top, bottom = np.array([83, 54, 23], float), np.array([34, 19, 7], float)
+    gradient = np.linspace(top, bottom, height)[:, None, :].repeat(width, axis=1)
+    background = gradient.astype(np.uint8)
+
+    def project(points, theta):
+        cos_t, sin_t = np.cos(theta), np.sin(theta)
+        x_rot = points[:, 0] * cos_t - points[:, 1] * sin_t
+        y_rot = points[:, 0] * sin_t + points[:, 1] * cos_t
+        up = points[:, 2] * cos_p + y_rot * sin_p
+        return center_x + x_rot * scale, center_y - (up - center_up) * scale, y_rot
+
+    def to_int(x, y):
+        return int(round(float(x))), int(round(float(y)))
+
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    work_dir = tempfile.mkdtemp(prefix="cricket_3d_")
+    writer = None
+    try:
+        writer, raw_path = _open_video_writer(work_dir, fps_out, (width, height))
+        if writer is None:
+            raise ProcessorError("OpenCV could not open a video writer for the 3D video.")
+
+        for index, points in enumerate(points_list):
+            theta = {
+                "side": np.radians(90.0),
+                "front": 0.0,
+            }.get(view, np.radians(25.0 + 45.0 * (index / fps_out)))
+
+            canvas = background.copy()
+
+            # floor rings (ellipses) and title
+            ground_y = center_y - (z_min * cos_p - center_up) * scale
+            for factor in (0.5, 1.0):
+                axes = (int(radius * scale * factor), max(2, int(radius * scale * factor * sin_p)))
+                cv2.ellipse(canvas, to_int(center_x, ground_y), axes, 0, 0, 360,
+                            colours["floor"], 1, cv2.LINE_AA)
+            cv2.putText(canvas, "THE CRICKET ALCHEMIST  |  3D POSE (APPROXIMATE)",
+                        (int(20 * ui), int(36 * ui)), font, 0.62 * ui, colours["white"],
+                        max(1, int(2 * ui)), cv2.LINE_AA)
+            cv2.putText(canvas, "Single-camera estimate, hip-centred. Not validated biomechanics.",
+                        (int(20 * ui), height - int(18 * ui)), font, 0.45 * ui,
+                        (200, 190, 175), 1, cv2.LINE_AA)
+
+            if points is None:
+                cv2.putText(canvas, "TRACKING LOST", (int(width * 0.36), int(height * 0.5)),
+                            font, 0.9 * ui, colours["gold"], max(1, int(2 * ui)), cv2.LINE_AA)
+                writer.write(canvas)
+                continue
+
+            sx, sy, depth = project(points, theta)
+            side = sides[index] if index < len(sides) else ""
+
+            # floor shadow
+            flat = points.copy()
+            flat[:, 2] = z_min
+            fx, fy, _ = project(flat, theta)
+            for a, b in connections:
+                cv2.line(canvas, to_int(fx[a], fy[a]), to_int(fx[b], fy[b]),
+                         colours["shadow"], max(1, int(3 * ui)), cv2.LINE_AA)
+
+            # translucent torso
+            torso = np.array([to_int(sx[i], sy[i]) for i in (11, 12, 24, 23)], np.int32)
+            overlay = canvas.copy()
+            cv2.fillPoly(overlay, [torso], colours["torso"], cv2.LINE_AA)
+            canvas = cv2.addWeighted(overlay, 0.35, canvas, 0.65, 0)
+
+            # limbs sorted far to near
+            segments_to_draw = []
+            for pairs, colour, thickness in (
+                (neutral_pairs, colours["neutral"], 4),
+                (left_pairs, colours["left"], 6),
+                (right_pairs, colours["right"], 6),
+            ):
+                for a, b in pairs:
+                    segments_to_draw.append(((depth[a] + depth[b]) / 2.0, a, b, colour, thickness))
+            segments_to_draw.sort(key=lambda item: -item[0])
+            for _, a, b, colour, thickness in segments_to_draw:
+                cv2.line(canvas, to_int(sx[a], sy[a]), to_int(sx[b], sy[b]),
+                         colour, max(2, int(thickness * ui)), cv2.LINE_AA)
+
+            # wrist trail (last 40 sampled frames) and gold measured arm
+            wrist_id = {"right": 16, "left": 15}.get(side)
+            if wrist_id is not None:
+                trail = [
+                    to_int(*[v[wrist_id] for v in project(points_list[j], theta)[:2]])
+                    for j in range(max(0, index - 39), index + 1)
+                    if points_list[j] is not None
+                ]
+                if len(trail) > 1:
+                    cv2.polylines(canvas, [np.array(trail, np.int32)], False,
+                                  (80, 160, 190), max(1, int(2 * ui)), cv2.LINE_AA)
+                for a, b in arm_pairs[side]:
+                    cv2.line(canvas, to_int(sx[a], sy[a]), to_int(sx[b], sy[b]),
+                             colours["gold"], max(3, int(10 * ui)), cv2.LINE_AA)
+
+            # joints and head
+            for joint in range(11, 33):
+                cv2.circle(canvas, to_int(sx[joint], sy[joint]), max(2, int(5 * ui)),
+                           colours["white"], -1, cv2.LINE_AA)
+            cv2.circle(canvas, to_int(sx[0], sy[0]), max(4, int(14 * ui)),
+                       colours["white"], -1, cv2.LINE_AA)
+
+            # read-out text, top-right
+            for line_number, text in enumerate(labels[index] if index < len(labels) else []):
+                cv2.putText(canvas, str(text), (width - int(230 * ui), int((66 + 26 * line_number) * ui)),
+                            font, 0.55 * ui, colours["gold"], max(1, int(2 * ui)), cv2.LINE_AA)
+
+            writer.write(canvas)
+
+        writer.release()
+        writer = None
+
+        if not os.path.isfile(raw_path) or os.path.getsize(raw_path) <= 0:
+            raise ProcessorError("OpenCV produced an empty 3D video file.")
+        final_path = os.path.join(work_dir, "skeleton_3d_h264.mp4")
+        convert_to_browser_mp4(raw_path, final_path, timeout=OVERLAY_CONVERSION_TIMEOUT,
+                               max_width=width, include_audio=False)
+        probe_video(final_path)
+        with open(final_path, "rb") as handle:
+            data = handle.read()
+        if not data:
+            raise ProcessorError("The converted 3D video is empty.")
+        return data
+    finally:
+        if writer is not None:
+            writer.release()
         shutil.rmtree(work_dir, ignore_errors=True)
