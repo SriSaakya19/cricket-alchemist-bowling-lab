@@ -47,7 +47,8 @@ SUPPORTED_EXTENSIONS = (".mp4", ".mov", ".avi", ".m4v", ".mkv", ".webm")
 SOURCE_CONVERSION_TIMEOUT = 300
 OVERLAY_CONVERSION_TIMEOUT = 180
 PROBE_TIMEOUT = 30
-MAX_ENCODE_WIDTH = 1280      # browser copy of the upload
+MAX_ENCODE_WIDTH = 960       # browser copy of the upload (lighter on small servers)
+MAX_CLIP_SECONDS = 60        # only the first minute of an upload is used
 MAX_OVERLAY_WIDTH = 960      # skeleton replay
 MAX_FALLBACK_WIDTH = 640     # JPEG frames used only if video encoding fails
 
@@ -138,6 +139,11 @@ def _run_ffmpeg(args: list, timeout: int) -> None:
         raise FFmpegNotFoundError(FFMPEG_MISSING_MESSAGE)
 
     command = [ffmpeg, "-hide_banner", "-nostdin", "-loglevel", "error", "-y"] + list(args)
+    nice = shutil.which("nice")
+    if nice:
+        # Run FFmpeg at low priority so it cannot starve the Streamlit server,
+        # which otherwise shows up as "Connection failed with status 502".
+        command = [nice, "-n", "10"] + command
     try:
         completed = subprocess.run(
             command,
@@ -170,6 +176,7 @@ def convert_to_browser_mp4(
     timeout: int = SOURCE_CONVERSION_TIMEOUT,
     max_width: int = MAX_ENCODE_WIDTH,
     include_audio: bool = True,
+    max_seconds: Optional[int] = None,
 ) -> None:
     """
     Re-encode a video to H.264 / yuv420p MP4 with the moov atom at the front.
@@ -185,8 +192,11 @@ def convert_to_browser_mp4(
             args += ["-map", "0:a:0?", "-c:a", "aac", "-b:a", "128k"]
         else:
             args += ["-an"]
+        if max_seconds:
+            args += ["-t", str(int(max_seconds))]
         args += [
             "-vf", video_filter,
+            "-threads", "2",
             "-c:v", "libx264",
             "-preset", "veryfast",
             "-crf", "23",
@@ -325,7 +335,11 @@ def convert_uploaded_video(video_bytes: bytes, filename: str) -> Dict[str, Any]:
         with open(source_path, "wb") as handle:
             handle.write(video_bytes)
 
-        convert_to_browser_mp4(source_path, output_path, timeout=SOURCE_CONVERSION_TIMEOUT)
+        convert_to_browser_mp4(
+            source_path, output_path,
+            timeout=SOURCE_CONVERSION_TIMEOUT,
+            max_seconds=MAX_CLIP_SECONDS,
+        )
         info = probe_video(output_path)
 
         with open(output_path, "rb") as handle:
