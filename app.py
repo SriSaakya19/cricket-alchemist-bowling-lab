@@ -1,6 +1,9 @@
 import base64
 import hashlib
 import html
+import threading
+import time
+import uuid
 from datetime import datetime
 
 import numpy as np
@@ -328,6 +331,171 @@ document.getElementById("dl").href =
 """,
         height=58,
     )
+
+
+# -------------------- BACKGROUND ANALYSIS JOBS --------------------
+
+JOB_TTL_SECONDS = 2 * 60 * 60   # finished jobs are kept for two hours
+MAX_JOBS = 3                    # keep memory small on a free server
+
+
+@st.cache_resource
+def job_store():
+    """One shared store for the whole server, so a job outlives the page that started it."""
+    # "run" lets only one analysis use the CPU and memory at a time (free servers are small)
+    return {"lock": threading.Lock(), "jobs": {}, "run": threading.Semaphore(1)}
+
+
+def _prune_jobs(store):
+    now = time.time()
+    with store["lock"]:
+        for job_id in [j for j, v in store["jobs"].items() if now - v["created"] > JOB_TTL_SECONDS]:
+            store["jobs"].pop(job_id, None)
+        while len(store["jobs"]) > MAX_JOBS:
+            oldest = min(store["jobs"], key=lambda j: store["jobs"][j]["created"])
+            store["jobs"].pop(oldest, None)
+
+
+def get_job(job_id):
+    if not job_id:
+        return None
+    return job_store()["jobs"].get(job_id)
+
+
+def start_job(source, stride, max_frames, model_complexity):
+    """Start the pose analysis in a background thread and return a job id at once."""
+    store = job_store()
+    job = {
+        "id": uuid.uuid4().hex[:10],
+        "created": time.time(),
+        "state": "running",
+        "done": 0,
+        "total": 1,
+        "message": "Starting the analysis...",
+        "result": None,
+        "error": None,
+        "source": source,
+    }
+    with store["lock"]:
+        store["jobs"][job["id"]] = job
+    _prune_jobs(store)
+
+    def on_progress(done, total, message=None):
+        job["done"] = int(done)
+        job["total"] = max(int(total), 1)
+        job["message"] = message or ""
+
+    def work():
+        queued = not store["run"].acquire(blocking=False)
+        if queued:
+            job["message"] = "Another video is being analysed first. Yours is next in line..."
+            store["run"].acquire()
+        try:
+            job["message"] = "Starting the analysis..."
+            result = analyze_video_bytes(
+                source["mp4_bytes"],
+                stride=stride,
+                max_frames=max_frames,
+                progress_callback=on_progress,
+                model_complexity=model_complexity,
+            )
+            if not isinstance(result, dict):
+                raise ProcessorError("The processor returned an unexpected result.")
+            if "data" not in result:
+                raise ProcessorError("The processor did not return frame-level data.")
+            result["video_key"] = source["key"]
+            result["filename"] = source["name"]
+            job["result"] = result
+            job["state"] = "done"
+        except ProcessorError as error:
+            job["error"] = f"Video processing error: {error}"
+            job["state"] = "error"
+        except Exception as error:  # noqa: BLE001 - shown to the user
+            job["error"] = (
+                f"Analysis error: {error}. Try a short clip with the full player visible "
+                "and good lighting."
+            )
+            job["state"] = "error"
+        finally:
+            store["run"].release()
+
+    threading.Thread(target=work, daemon=True).start()
+    return job["id"]
+
+
+@st.fragment(run_every=2)
+def job_progress(job_id):
+    """Polls the background job every two seconds; reruns the page when it finishes."""
+    job = get_job(job_id)
+    if job is None or job["state"] != "running":
+        st.rerun()
+        return
+    fraction = min(max(job["done"] / max(job["total"], 1), 0.0), 0.97)
+    st.progress(
+        fraction,
+        text=job["message"] or f"Analysing your video... {fraction * 100:.0f}%",
+    )
+    st.info(
+        "Your video is being analysed in the background, usually 1 to 3 minutes. You can "
+        "keep this page open. If you leave, come back to this same page address later; it "
+        "includes your job code, so your results will be waiting (kept for 2 hours)."
+    )
+
+
+def render_footer():
+    st.markdown("---")
+    st.markdown(
+        """
+<div style="text-align:center;padding:1.4rem 0">
+<div class="kicker">BUILT BY SRI SAAKYA</div>
+<div style="font-family:'Barlow Condensed',sans-serif;
+font-size:2.2rem;font-weight:900;color:#FFD16D">
+@thecricketalchemist19
+</div>
+<div style="color:#C2D0E2;font-size:.82rem">
+THE CRICKET ALCHEMIST · BOWLING LAB
+</div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+
+def build_one_liner(df, detection_pct, reliable_pct, break_count, release_time):
+    """The single sentence a player needs: what happened at release, and can it be trusted."""
+    if df.empty or detection_pct <= 0:
+        return "❌ We could not find a bowler in this clip. Try a clip with your whole body in view."
+    if reliable_pct < 40:
+        return ("❌ We could not follow you reliably in this clip. Try one steady side-on clip "
+                "with only the bowler in view.")
+    if release_time is None:
+        return ("⚠️ We tracked your movement but could not pin down your release. "
+                "Open the full analysis to explore.")
+
+    def at_release(column):
+        values = df[["time_seconds", column]].dropna()
+        values = values[(values["time_seconds"] - release_time).abs() <= 0.2]
+        if values.empty:
+            return None
+        row = (values["time_seconds"] - release_time).abs().idxmin()
+        return float(values.at[row, column])
+
+    parts = []
+    knee, elbow = at_release("knee_angle_deg"), at_release("elbow_angle_deg")
+    if knee is not None:
+        parts.append(f"your knee is at {knee:.0f}°")
+    if elbow is not None:
+        parts.append(f"your elbow is at {elbow:.0f}°")
+    if not parts:
+        return ("⚠️ We could not measure your knee or elbow around the release. "
+                "Open the full analysis to explore.")
+
+    good = reliable_pct >= 75 and detection_pct >= 70 and break_count == 0
+    sentence = (f"{'✅' if good else '⚠️'} At release (about {release_time:.1f} s), "
+                + " and ".join(parts) + " (180° = fully straight).")
+    if not good:
+        sentence += " Some frames were unreliable, so treat this as rough."
+    return sentence
 
 
 def upload_key(uploaded_file):
@@ -1741,6 +1909,14 @@ uploaded = st.file_uploader(
 
 source = None
 
+if "job_id" not in st.session_state:
+    try:
+        job_from_address = st.query_params.get("job")
+    except Exception:  # noqa: BLE001
+        job_from_address = None
+    if job_from_address and get_job(job_from_address):
+        st.session_state["job_id"] = job_from_address
+
 if uploaded is not None:
     current_key = upload_key(uploaded)
     cached_source = st.session_state.get("source_video")
@@ -1752,8 +1928,13 @@ if uploaded is not None:
         st.error(cached_error["message"])
     else:
         # A new file: drop any previous video and analysis.
-        for state_key in ("source_video", "source_video_error", "bowling_result"):
+        for state_key in ("source_video", "source_video_error", "bowling_result",
+                          "job_id", "loaded_job"):
             st.session_state.pop(state_key, None)
+        try:
+            st.query_params.pop("job", None)
+        except Exception:  # noqa: BLE001 - query params are only a convenience
+            pass
 
         try:
             with st.spinner("Converting video to a browser-compatible MP4..."):
@@ -1789,46 +1970,44 @@ if source is not None:
     )
     show_video(source["mp4_bytes"], info["width"], info["height"])
 
-    if call_stretch(st.button, "▶ RUN BOWLING ANALYSIS", key="run_bowling_analysis"):
-        progress_bar = st.progress(0.0, text="Starting the analysis...")
-
-        def on_progress(done, total, message=None):
-            fraction = min(max(done / max(total, 1), 0.0), 0.97)
-            progress_bar.progress(
-                fraction,
-                text=message
-                or f"Analysed {done} of {total} sampled frames ({fraction * 100:.0f}%)",
-            )
-
+    current_job = get_job(st.session_state.get("job_id"))
+    job_running = bool(current_job and current_job["state"] == "running")
+    if call_stretch(st.button, "▶ RUN BOWLING ANALYSIS", key="run_bowling_analysis",
+                    disabled=job_running):
+        st.session_state.pop("bowling_result", None)
+        st.session_state.pop("loaded_job", None)
+        new_job_id = start_job(
+            source, int(stride), int(max_frames),
+            0 if analysis_mode.startswith("Fast") else 1,
+        )
+        st.session_state["job_id"] = new_job_id
         try:
-            analysis_result = analyze_video_bytes(
-                source["mp4_bytes"],
-                stride=int(stride),
-                max_frames=int(max_frames),
-                progress_callback=on_progress,
-                model_complexity=0 if analysis_mode.startswith("Fast") else 1,
-            )
+            st.query_params["job"] = new_job_id
+        except Exception:  # noqa: BLE001
+            pass
+        st.rerun()
 
-            if not isinstance(analysis_result, dict):
-                raise ProcessorError("The processor returned an unexpected result.")
-            if "data" not in analysis_result:
-                raise ProcessorError("The processor did not return frame-level data.")
+# -------------------- BACKGROUND JOB STATUS --------------------
 
-            analysis_result["video_key"] = source["key"]
-            analysis_result["filename"] = source["name"]
-            st.session_state["bowling_result"] = analysis_result
-            st.success("Video analysis completed.")
-
-        except ProcessorError as error:
-            st.error(f"Video processing error: {error}")
-        except Exception as error:  # noqa: BLE001 - shown to the user
-            st.error(f"Analysis error: {error}")
-            st.info(
-                "Try a short clip with the full player visible "
-                "and good lighting."
-            )
-        finally:
-            progress_bar.empty()
+active_job_id = st.session_state.get("job_id")
+active_job = get_job(active_job_id)
+if active_job_id and active_job is None and "bowling_result" not in st.session_state:
+    st.warning(
+        "That analysis is no longer on the server (it may have expired or the server "
+        "restarted). Please upload the clip and run it again."
+    )
+elif active_job is not None:
+    if active_job["state"] == "running":
+        job_progress(active_job_id)
+    elif active_job["state"] == "error":
+        st.error(active_job["error"])
+    elif active_job["state"] == "done" and st.session_state.get("loaded_job") != active_job_id:
+        st.session_state["bowling_result"] = active_job["result"]
+        st.session_state["loaded_job"] = active_job_id
+        stored = st.session_state.get("source_video")
+        if not stored or stored.get("key") != active_job["source"]["key"]:
+            st.session_state["source_video"] = active_job["source"]
+        st.success("Your analysis is ready.")
 
 # -------------------- ANALYSIS RESULTS --------------------
 
@@ -1909,6 +2088,34 @@ if analysis is not None:
     )
 
     glance_slot = st.container()
+
+    # Quiet calculations used by the one-line answer (the sections below reuse them).
+    view_info = describe_camera_view(df)
+    key_moments = detect_key_moments(df)
+    release_time = next(
+        (moment["time"] for moment in key_moments if moment["key"] == "release"), None
+    )
+    one_line = build_one_liner(df, detection_pct, reliable_pct, break_count, release_time)
+    with glance_slot:
+        st.markdown(
+            f"""
+<div class="panel">
+<div class="kicker">YOUR RESULT IN ONE LINE</div>
+<p style="font-size:1.5rem;font-weight:800;color:#FFFFFF;line-height:1.4;margin:.6rem 0 .4rem">{html.escape(one_line)}</p>
+<div class="muted">Knee and elbow are for the leg and arm closest to the camera. The release
+time is an automatic guess.</div>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
+        show_full = st.toggle(
+            "Show the full analysis (videos, 3D view, graphs, report)",
+            value=False,
+            key="show_full_analysis",
+        )
+    if not show_full:
+        render_footer()
+        st.stop()
 
     # -------------------- METRICS --------------------
 
@@ -2520,20 +2727,4 @@ below marks the likely release zone.</div>
 
 # -------------------- FOOTER --------------------
 
-st.markdown("---")
-
-st.markdown(
-    """
-<div style="text-align:center;padding:1.4rem 0">
-<div class="kicker">BUILT BY SRI SAAKYA</div>
-<div style="font-family:'Barlow Condensed',sans-serif;
-font-size:2.2rem;font-weight:900;color:#FFD16D">
-@thecricketalchemist19
-</div>
-<div style="color:#C2D0E2;font-size:.82rem">
-THE CRICKET ALCHEMIST · BOWLING LAB
-</div>
-</div>
-""",
-    unsafe_allow_html=True,
-)
+render_footer()
