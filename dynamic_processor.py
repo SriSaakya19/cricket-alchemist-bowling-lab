@@ -439,6 +439,23 @@ def _compute_angles(landmarks, width: float, height: float, side: str,
     return angles
 
 
+def _arm_height(landmarks, width: int, height: int, side: str) -> float:
+    """
+    Height of the wrist above the shoulder, in torso lengths (shoulder to hip).
+    Positive means the wrist is above the shoulder, about 1 means the arm is
+    stretched straight up. NaN when the landmarks are not clearly visible.
+    """
+    ids = _SIDE_LANDMARKS[side]
+    if any(_visibility(landmarks, ids[name]) < _VISIBILITY_THRESHOLD
+           for name in ("shoulder", "wrist", "hip")):
+        return float("nan")
+    shoulder, wrist, hip = (landmarks[ids[name]] for name in ("shoulder", "wrist", "hip"))
+    torso = float(np.hypot((shoulder.x - hip.x) * width, (shoulder.y - hip.y) * height))
+    if torso < 1e-6:
+        return float("nan")
+    return float(((shoulder.y - wrist.y) * height) / torso)
+
+
 def _estimate_view_yaw(world_landmarks) -> float:
     """
     Rough camera-view estimate from MediaPipe world landmarks.
@@ -466,6 +483,24 @@ def _round_or_nan(value: float) -> float:
     return round(float(value), 2) if np.isfinite(value) else float("nan")
 
 
+def _body_position(landmarks, width: int, height: int):
+    """
+    Where the body is in the frame: mid-hip x and y (0-1 of the frame) and the
+    shoulder-to-hip length as a fraction of the frame height. Used by the app
+    to spot camera cuts and moments when the tracker jumps to another person.
+    Returns (nan, nan, nan) when the trunk landmarks are not clearly visible.
+    """
+    nan = float("nan")
+    if any(_visibility(landmarks, i) < _VISIBILITY_THRESHOLD for i in (11, 12, 23, 24)):
+        return nan, nan, nan
+    hip_x = (landmarks[23].x + landmarks[24].x) / 2.0
+    hip_y = (landmarks[23].y + landmarks[24].y) / 2.0
+    shoulder_x = (landmarks[11].x + landmarks[12].x) / 2.0
+    shoulder_y = (landmarks[11].y + landmarks[12].y) / 2.0
+    torso = float(np.hypot((shoulder_x - hip_x) * width, (shoulder_y - hip_y) * height))
+    return float(hip_x), float(hip_y), torso / max(float(height), 1.0)
+
+
 # --------------------------------------------------------------------------
 # OpenCV writer helper
 # --------------------------------------------------------------------------
@@ -489,7 +524,8 @@ def _open_video_writer(directory: str, fps: float, size: Tuple[int, int]):
 # --------------------------------------------------------------------------
 # Step 2: pose analysis and overlay video
 # --------------------------------------------------------------------------
-def analyze_video_bytes(video_bytes: bytes, stride: int = 2, max_frames: int = 240) -> Dict[str, Any]:
+def analyze_video_bytes(video_bytes: bytes, stride: int = 2, max_frames: int = 240,
+                        progress_callback=None) -> Dict[str, Any]:
     """Convenience wrapper: write bytes to a temp file, analyze, clean up."""
     if not video_bytes:
         raise VideoValidationError("There is no video data to analyze.")
@@ -498,14 +534,19 @@ def analyze_video_bytes(video_bytes: bytes, stride: int = 2, max_frames: int = 2
         path = os.path.join(work_dir, "input.mp4")
         with open(path, "wb") as handle:
             handle.write(video_bytes)
-        return analyze_video(path, stride=stride, max_frames=max_frames)
+        return analyze_video(path, stride=stride, max_frames=max_frames,
+                             progress_callback=progress_callback)
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
 
 
-def analyze_video(video_path: str, stride: int = 2, max_frames: int = 240) -> Dict[str, Any]:
+def analyze_video(video_path: str, stride: int = 2, max_frames: int = 240,
+                  progress_callback=None) -> Dict[str, Any]:
     """
     Analyze a cricket bowling video with MediaPipe Pose.
+
+    progress_callback(done, total, message=None) is called every few sampled
+    frames and when encoding starts; errors inside it never stop the analysis.
 
     Returns a dict with:
       data                 DataFrame: one row per sampled frame
@@ -567,6 +608,22 @@ def analyze_video(video_path: str, stride: int = 2, max_frames: int = 240) -> Di
         mp_draw = mp.solutions.drawing_utils
 
         output_fps = float(min(max(fps / stride, 1.0), 60.0))
+        expected_frames = (
+            min(max_frames, (total_frames + stride - 1) // stride)
+            if total_frames > 0 else max_frames
+        )
+        callback_failed = False
+
+        def notify(done, message=None):
+            nonlocal callback_failed
+            if progress_callback is None or callback_failed:
+                return
+            try:
+                progress_callback(int(done), int(max(expected_frames, 1)), message)
+            except Exception as exc:  # noqa: BLE001 - progress must never break analysis
+                callback_failed = True
+                logger.warning("Progress callback failed: %s", exc)
+
         rows = []
         pose_3d_frames = []
         fallback_frames = []
@@ -601,6 +658,8 @@ def analyze_video(video_path: str, stride: int = 2, max_frames: int = 240) -> Di
             side = ""
             pose_3d_frame = None
             view_yaw = float("nan")
+            arm_height = float("nan")
+            hip_x = hip_y = torso_len = float("nan")
             angles_3d = {
                 "wrist_angle_3d_deg": float("nan"),
                 "elbow_angle_3d_deg": float("nan"),
@@ -639,6 +698,9 @@ def analyze_video(video_path: str, stride: int = 2, max_frames: int = 240) -> Di
                     )
                     side = _choose_side(landmarks)
                     angles = _compute_angles(landmarks, frame_width, frame_height, side)
+                    arm_height = _arm_height(landmarks, frame_width, frame_height, side)
+                    hip_x, hip_y, torso_len = _body_position(
+                        landmarks, frame_width, frame_height)
                     detected = True
 
                     # Approximate 3D: MediaPipe world landmarks (metres, hip-centred)
@@ -719,6 +781,10 @@ def analyze_video(video_path: str, stride: int = 2, max_frames: int = 240) -> Di
                 "measured_side": side,
                 "visible_landmarks": int(visible_count),
                 "view_yaw_deg": _round_or_nan(view_yaw),
+                "wrist_above_shoulder": _round_or_nan(arm_height),
+                "hip_x": _round_or_nan(hip_x),
+                "hip_y": _round_or_nan(hip_y),
+                "torso_len": _round_or_nan(torso_len),
                 "wrist_angle_deg": _round_or_nan(angles["wrist_angle_deg"]),
                 "elbow_angle_deg": _round_or_nan(angles["elbow_angle_deg"]),
                 "shoulder_angle_deg": _round_or_nan(angles["shoulder_angle_deg"]),
@@ -732,6 +798,8 @@ def analyze_video(video_path: str, stride: int = 2, max_frames: int = 240) -> Di
             })
             pose_3d_frames.append(pose_3d_frame)
             sampled_count += 1
+            if sampled_count % 3 == 0:
+                notify(sampled_count)
 
         truncated = sampled_count >= max_frames and (total_frames <= 0 or frame_index < total_frames)
 
@@ -755,6 +823,7 @@ def analyze_video(video_path: str, stride: int = 2, max_frames: int = 240) -> Di
         if not rows:
             raise VideoValidationError("No readable video frames were found in this clip.")
 
+        notify(len(rows), "Encoding the skeleton video...")
         data = pd.DataFrame(rows)
         pose_percentage = float(data["pose_detected"].mean() * 100) if len(data) else 0.0
         duration = total_frames / fps if total_frames > 0 else float(data["time_seconds"].iloc[-1])
@@ -1014,4 +1083,41 @@ def render_3d_video(
     finally:
         if writer is not None:
             writer.release()
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+# --------------------------------------------------------------------------
+# Key-frame extraction (used by the coach report)
+# --------------------------------------------------------------------------
+def extract_video_frames(video_bytes: bytes, indices, max_width: int = 640) -> Dict[int, bytes]:
+    """Return {frame_index: JPEG bytes} for the requested frame indices of an MP4."""
+    wanted = sorted({int(i) for i in indices if int(i) >= 0})
+    if not video_bytes or not wanted:
+        return {}
+    work_dir = tempfile.mkdtemp(prefix="cricket_frames_")
+    capture = None
+    frames: Dict[int, bytes] = {}
+    try:
+        path = os.path.join(work_dir, "clip.mp4")
+        with open(path, "wb") as handle:
+            handle.write(video_bytes)
+        capture = cv2.VideoCapture(path)
+        if not capture.isOpened():
+            return {}
+        for index in wanted:
+            capture.set(cv2.CAP_PROP_POS_FRAMES, index)
+            ok, frame = capture.read()
+            if not ok or frame is None:
+                continue
+            if frame.shape[1] > max_width:
+                scale = max_width / frame.shape[1]
+                frame = cv2.resize(frame, (max_width, max(1, int(frame.shape[0] * scale))),
+                                   interpolation=cv2.INTER_AREA)
+            encoded_ok, encoded = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 82])
+            if encoded_ok:
+                frames[index] = encoded.tobytes()
+        return frames
+    finally:
+        if capture is not None:
+            capture.release()
         shutil.rmtree(work_dir, ignore_errors=True)
