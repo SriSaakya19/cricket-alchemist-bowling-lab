@@ -599,6 +599,309 @@ def describe_camera_view(df):
     return {"label": label, "median": median, "low": low, "high": high, "notes": notes}
 
 
+CANVAS_3D_TEMPLATE = r"""<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+html,body{margin:0;background:transparent;font-family:Arial,Helvetica,sans-serif;color:#E7F0FC}
+#wrap{border:1px solid #294968;border-radius:14px;overflow:hidden;background:#0b1522}
+canvas{display:block;width:100%;touch-action:none}
+#c3d{cursor:grab}
+#bar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:8px 10px;background:#0a1828}
+button{background:linear-gradient(90deg,#FFDF98,#E8B54F);color:#101827;border:0;border-radius:8px;padding:7px 12px;font-weight:800;font-size:12px;cursor:pointer}
+button.alt{background:#10243A;color:#fff;border:1px solid #4A6F93}
+button.on{outline:2px solid #FFD16D}
+input[type=range]{flex:1;min-width:140px;accent-color:#E8B54F}
+#info{font-size:12px;color:#FFD16D;min-width:130px;text-align:right}
+</style></head><body>
+<div id="wrap">
+<canvas id="c3d"></canvas>
+<div id="bar">
+<button id="play">▶ Play</button><button id="slow" class="alt">🐢 Slow-mo</button>
+<button class="alt view" data-yaw="25" data-pitch="14">3/4</button>
+<button class="alt view" data-yaw="90" data-pitch="14">Side-on</button>
+<button class="alt view" data-yaw="0" data-pitch="14">Front</button>
+<button class="alt view" data-yaw="0" data-pitch="80">Top</button>
+<button id="rot" class="alt">⟳ Rotate</button>
+<input id="seek" type="range" min="0" value="0"><span id="info"></span>
+</div>
+<canvas id="cg"></canvas>
+</div>
+<script>
+const D = __DATA__;
+const P = D.poses, N = P.length;
+const rad = Math.PI / 180;
+let frame = Math.min(Math.max(D.start, 0), N - 1);
+let playing = false, slow = 1, auto = false, dirty = true;
+let yaw = 25 * rad, pitch = 14 * rad, zoom = 1;
+const cv = document.getElementById('c3d'), ctx = cv.getContext('2d');
+const gv = document.getElementById('cg'), gtx = gv.getContext('2d');
+const seek = document.getElementById('seek'), info = document.getElementById('info');
+seek.max = N - 1;
+
+let radius = 0.3, zMin = 1e9, zMax = -1e9;
+for (const f of P) { if (!f) continue; for (const p of f) {
+  radius = Math.max(radius, Math.hypot(p[0], p[1]));
+  zMin = Math.min(zMin, p[2]); zMax = Math.max(zMax, p[2]); } }
+if (zMin > zMax) { zMin = -0.9; zMax = 0.9; }
+
+const BODY = D.connections.filter(c => c[0] >= 11 && c[1] >= 11);
+function armFor(i) { return D.sides[i] === 'left' ? [[11,13],[13,15]] : [[12,14],[14,16]]; }
+function isArm(i, a, b) { return armFor(i).some(p => (p[0]===a && p[1]===b) || (p[0]===b && p[1]===a)); }
+function wristId(i) { return D.sides[i] === 'left' ? 15 : 16; }
+function elbowId(i) { return D.sides[i] === 'left' ? 13 : 14; }
+
+let W = 0, H = 0, S = 1, cy = 0, cu = 0, cp = 1, sp = 0;
+function setup() {
+  const r = window.devicePixelRatio || 1;
+  W = cv.clientWidth; H = D.h3;
+  cv.width = W * r; cv.height = H * r; cv.style.height = H + 'px'; ctx.setTransform(r,0,0,r,0,0);
+  gv.width = W * r; gv.height = 96 * r; gv.style.height = '96px'; gtx.setTransform(r,0,0,r,0,0);
+  dirty = true;
+}
+function frameMath() {
+  cp = Math.cos(pitch); sp = Math.sin(pitch);
+  const span = (zMax - zMin) * cp + 2 * radius * sp;
+  S = zoom * Math.min(0.74 * H / span, 0.84 * W / (2 * radius));
+  cy = H / 2 + 0.03 * H;
+  cu = (zMin + zMax) / 2 * cp;
+}
+function proj(p) {
+  const ct = Math.cos(yaw), st = Math.sin(yaw);
+  const xr = p[0] * ct - p[1] * st, yr = p[0] * st + p[1] * ct;
+  const up = p[2] * cp + yr * sp;
+  return [W / 2 + xr * S, cy - (up - cu) * S, yr];
+}
+function line(a, b, w, col) {
+  ctx.strokeStyle = col; ctx.lineWidth = w; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+}
+function mix(c1, c2, t) {
+  return 'rgb(' + c1.map((v, i) => Math.round(v + (c2[i] - v) * t)).join(',') + ')';
+}
+function text(s, x, y, size, col, align, bold) {
+  ctx.font = (bold ? 'bold ' : '') + size + 'px Arial'; ctx.fillStyle = col;
+  ctx.textAlign = align || 'left'; ctx.fillText(s, x, y);
+}
+
+function draw() {
+  frameMath();
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, '#16222f'); g.addColorStop(1, '#0a121c');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+
+  // floor rings
+  const gy = cy - (zMin * cp - cu) * S;
+  ctx.strokeStyle = 'rgba(120,150,180,0.30)'; ctx.lineWidth = 1;
+  for (const f of [0.5, 1.0]) {
+    const rx = radius * S * f, ry = Math.max(3, rx * sp);
+    ctx.beginPath(); ctx.ellipse(W / 2, gy, rx, ry, 0, 0, Math.PI * 2); ctx.stroke();
+  }
+
+  let yawDeg = Math.round(((yaw / rad + 540) % 360) - 180);
+  text('3D BIOMECHANICAL SKELETON', 14, 22, 11, '#8fa3b8', 'left', true);
+  text('camera view ' + (yawDeg >= 0 ? '+' : '') + yawDeg + '°   ·   depth estimated from one camera',
+       W - 14, 22, 10, '#6c8097', 'right');
+  text('Single-camera estimate, hip-centred. Not validated biomechanics.', 14, H - 12, 10, '#6c8097', 'left');
+
+  const f = P[frame];
+  const lines = D.readouts[frame] || [];
+  lines.forEach((s, i) => text(s, W - 14, 48 + i * 17, 12, '#FFD16D', 'right', i === 0));
+
+  if (!f) {
+    text('TRACKING UNRELIABLE', W / 2, H / 2, 16, '#FFD16D', 'center', true);
+    text('this frame is left out (camera cut, another person, or hidden landmarks)', W / 2, H / 2 + 22, 11, '#8fa3b8', 'center');
+    drawGraph(); updateInfo(); return;
+  }
+
+  const pts = f.map(proj);
+  const flat = f.map(p => proj([p[0], p[1], zMin]));
+
+  // floor shadow
+  for (const [a, b] of BODY) line(flat[a], flat[b], Math.max(3, 0.035 * S), 'rgba(0,0,0,0.30)');
+
+  // torso
+  ctx.beginPath();
+  [11, 12, 24, 23].forEach((i, k) => k ? ctx.lineTo(pts[i][0], pts[i][1]) : ctx.moveTo(pts[i][0], pts[i][1]));
+  ctx.closePath(); ctx.fillStyle = 'rgba(52,64,80,0.96)'; ctx.fill();
+  ctx.strokeStyle = '#8d98a5'; ctx.lineWidth = Math.max(2, 0.02 * S); ctx.lineJoin = 'round'; ctx.stroke();
+
+  // limbs, far to near
+  let dmin = 1e9, dmax = -1e9;
+  for (const [a, b] of BODY) { const d = (pts[a][2] + pts[b][2]) / 2; dmin = Math.min(dmin, d); dmax = Math.max(dmax, d); }
+  const segs = BODY.map(([a, b]) => [(pts[a][2] + pts[b][2]) / 2, a, b]).sort((u, v) => v[0] - u[0]);
+  const lw = Math.max(5, 0.085 * S);
+  for (const [d, a, b] of segs) {
+    const near = dmax - dmin < 1e-6 ? 0.5 : 1 - (d - dmin) / (dmax - dmin);
+    const small = a >= 17 && b >= 17;
+    const arm = isArm(frame, a, b);
+    const col = arm ? '#e5484d' : mix([112, 122, 134], [190, 199, 209], near);
+    line(pts[a], pts[b], arm ? lw * 1.05 : (small ? lw * 0.4 : lw), col);
+  }
+
+  // neck and head
+  const mid = [(pts[11][0] + pts[12][0]) / 2, (pts[11][1] + pts[12][1]) / 2];
+  line(mid, pts[0], lw * 0.8, '#aab3bd');
+  ctx.beginPath(); ctx.arc(pts[0][0], pts[0][1], Math.max(6, 0.095 * S), 0, Math.PI * 2);
+  ctx.fillStyle = '#b3bcc6'; ctx.fill();
+
+  // joints
+  for (let i = 11; i < 33; i++) {
+    ctx.beginPath(); ctx.arc(pts[i][0], pts[i][1], Math.max(2.5, 0.016 * S), 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(225,232,240,0.85)'; ctx.fill();
+  }
+
+  // wrist trail
+  const w = wristId(frame);
+  ctx.strokeStyle = 'rgba(76,201,240,0.55)'; ctx.lineWidth = 2; ctx.beginPath();
+  let started = false;
+  for (let j = Math.max(0, frame - 30); j <= frame; j++) {
+    if (!P[j]) continue; const q = proj(P[j][w]);
+    if (started) ctx.lineTo(q[0], q[1]); else { ctx.moveTo(q[0], q[1]); started = true; }
+  }
+  ctx.stroke();
+
+  // elbow ring and wrist dot (like a biomechanics overlay)
+  const e = pts[elbowId(frame)];
+  ctx.beginPath(); ctx.arc(e[0], e[1], Math.max(5, 0.032 * S), 0, Math.PI * 2);
+  ctx.fillStyle = '#f4f7fb'; ctx.fill(); ctx.strokeStyle = '#e5484d'; ctx.lineWidth = 3; ctx.stroke();
+  const q = pts[w];
+  ctx.save(); ctx.shadowColor = '#4cc9f0'; ctx.shadowBlur = 14;
+  ctx.beginPath(); ctx.arc(q[0], q[1], Math.max(4, 0.024 * S), 0, Math.PI * 2);
+  ctx.fillStyle = '#4cc9f0'; ctx.fill(); ctx.restore();
+  ctx.beginPath(); ctx.arc(q[0], q[1], Math.max(4, 0.024 * S), 0, Math.PI * 2);
+  ctx.strokeStyle = '#eaffff'; ctx.lineWidth = 1.5; ctx.stroke();
+
+  drawGraph(); updateInfo();
+}
+
+function gx(t, t0, t1) { return 40 + (t - t0) / Math.max(t1 - t0, 1e-6) * (W - 54); }
+function gyv(v) { return 10 + (1 - v / 190) * 62; }
+function drawGraph() {
+  const t0 = D.times[0], t1 = D.times[N - 1];
+  gtx.clearRect(0, 0, W, 96); gtx.fillStyle = '#0a1828'; gtx.fillRect(0, 0, W, 96);
+  gtx.font = '10px Arial'; gtx.textAlign = 'right'; gtx.fillStyle = '#8fa3b8';
+  for (const v of [0, 60, 120, 180]) {
+    gtx.strokeStyle = '#1E3550'; gtx.lineWidth = 1; gtx.beginPath();
+    gtx.moveTo(40, gyv(v)); gtx.lineTo(W - 14, gyv(v)); gtx.stroke(); gtx.fillText(v + '°', 34, gyv(v) + 3);
+  }
+  function path(arr, col, wd, dash) {
+    gtx.strokeStyle = col; gtx.lineWidth = wd; gtx.setLineDash(dash || []); gtx.beginPath();
+    let pen = false;
+    for (let i = 0; i < N; i++) {
+      const v = arr[i];
+      if (v === null || v === undefined) { pen = false; continue; }
+      const x = gx(D.times[i], t0, t1), y = gyv(v);
+      if (pen) gtx.lineTo(x, y); else { gtx.moveTo(x, y); pen = true; }
+    }
+    gtx.stroke(); gtx.setLineDash([]);
+  }
+  path(D.elbow2d, 'rgba(184,204,224,0.55)', 1.5, [3, 3]);
+  path(D.elbow3d, '#4CC1FF', 2.5);
+  const x = gx(D.times[frame], t0, t1);
+  gtx.strokeStyle = 'rgba(255,209,109,0.9)'; gtx.lineWidth = 1.5;
+  gtx.beginPath(); gtx.moveTo(x, 6); gtx.lineTo(x, 76); gtx.stroke();
+  const v = D.elbow3d[frame];
+  if (v !== null && v !== undefined) { gtx.beginPath(); gtx.arc(x, gyv(v), 4.5, 0, Math.PI * 2); gtx.fillStyle = '#FFD16D'; gtx.fill(); }
+  gtx.textAlign = 'left'; gtx.fillStyle = '#C2D0E2'; gtx.font = '11px Arial';
+  gtx.fillText('Elbow (3D estimate, solid) vs 2D image (dotted)  ·  time (s)', 40, 91);
+}
+function updateInfo() {
+  info.textContent = 'Frame ' + (frame + 1) + ' / ' + N + '  ·  ' + D.times[frame].toFixed(2) + ' s';
+  seek.value = frame;
+}
+
+// controls
+document.getElementById('play').onclick = function () {
+  playing = !playing; this.textContent = playing ? '⏸ Pause' : '▶ Play';
+};
+document.getElementById('slow').onclick = function () {
+  slow = slow === 1 ? 3 : 1; this.classList.toggle('on', slow === 3);
+};
+document.getElementById('rot').onclick = function () { auto = !auto; this.classList.toggle('on', auto); };
+document.querySelectorAll('.view').forEach(b => b.onclick = () => {
+  yaw = +b.dataset.yaw * rad; pitch = +b.dataset.pitch * rad; auto = false;
+  document.getElementById('rot').classList.remove('on'); dirty = true;
+});
+seek.oninput = () => { frame = +seek.value; dirty = true; };
+let drag = null;
+cv.addEventListener('pointerdown', e => { drag = [e.clientX, e.clientY]; cv.setPointerCapture(e.pointerId); cv.style.cursor = 'grabbing'; });
+cv.addEventListener('pointermove', e => {
+  if (!drag) return;
+  yaw += (e.clientX - drag[0]) * 0.01;
+  pitch = Math.min(Math.max(pitch + (e.clientY - drag[1]) * 0.006, 0), 85 * rad);
+  drag = [e.clientX, e.clientY]; dirty = true;
+});
+cv.addEventListener('pointerup', () => { drag = null; cv.style.cursor = 'grab'; });
+cv.addEventListener('wheel', e => { e.preventDefault(); zoom = Math.min(Math.max(zoom * (e.deltaY < 0 ? 1.08 : 0.92), 0.5), 3); dirty = true; }, { passive: false });
+function seekFromGraph(e) {
+  const r = gv.getBoundingClientRect(), x = e.clientX - r.left;
+  const t0 = D.times[0], t1 = D.times[N - 1];
+  const t = t0 + (x - 40) / Math.max(r.width - 54, 1) * (t1 - t0);
+  let best = 0, bd = 1e9;
+  for (let i = 0; i < N; i++) { const d = Math.abs(D.times[i] - t); if (d < bd) { bd = d; best = i; } }
+  frame = best; dirty = true;
+}
+let gdrag = false;
+gv.addEventListener('pointerdown', e => { gdrag = true; seekFromGraph(e); });
+gv.addEventListener('pointermove', e => { if (gdrag) seekFromGraph(e); });
+window.addEventListener('pointerup', () => gdrag = false);
+window.addEventListener('resize', setup);
+
+let last = performance.now(), acc = 0;
+function tick(now) {
+  const dt = Math.min(now - last, 100); last = now;
+  if (auto) { yaw += dt * 0.0004; dirty = true; }
+  if (playing) {
+    acc += dt; const step = D.frameMs * slow;
+    while (acc >= step) { acc -= step; frame = (frame + 1) % N; dirty = true; }
+  }
+  if (dirty) { dirty = false; draw(); }
+  requestAnimationFrame(tick);
+}
+setup(); requestAnimationFrame(tick);
+</script></body></html>
+"""
+
+
+def build_3d_canvas_html(display_poses, connections, sides, labels, times,
+                         elbow_3d, elbow_2d, frame_ms, height, start_frame=0):
+    """
+    Self-contained 3D skeleton viewer drawn in the browser (HTML canvas).
+
+    All frames are sent once as JSON and animated in the browser, so Play, Pause,
+    Slow-mo, view buttons, dragging and the slider never trigger a Streamlit rerun
+    (the old Plotly version rebuilt hundreds of animation frames in Python).
+    Poses are MediaPipe world coordinates (metres, hip-centred, y down); they are
+    re-mapped here to x = left/right, y = depth, z = up.
+    """
+    import json
+
+    frames = []
+    for pose in display_poses:
+        if pose is None:
+            frames.append(None)
+        else:
+            frames.append([[round(float(p[0]), 3), round(float(p[2]), 3), round(-float(p[1]), 3)]
+                           for p in pose])
+
+    def nums(values):
+        return [None if (v is None or v != v) else round(float(v), 1) for v in values]
+
+    payload = {
+        "poses": frames,
+        "connections": [list(map(int, pair)) for pair in connections],
+        "sides": [str(side) for side in sides],
+        "readouts": [[str(line).replace(" deg", "\u00b0") for line in lines] for lines in labels],
+        "times": [round(float(t), 3) for t in times],
+        "elbow3d": nums(elbow_3d),
+        "elbow2d": nums(elbow_2d),
+        "frameMs": int(frame_ms),
+        "start": int(start_frame),
+        "h3": int(max(height - 170, 320)),
+    }
+    return CANVAS_3D_TEMPLATE.replace("__DATA__", json.dumps(payload, separators=(",", ":")))
+
+
 def build_3d_figure(display_poses, connections, sides, readouts, frame_ms,
                     times, elbow_3d, elbow_2d, height=780):
     """
@@ -1263,7 +1566,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-settings = st.columns(2)
+settings = st.columns(3)
 
 with settings[0]:
     stride = st.selectbox(
@@ -1278,6 +1581,15 @@ with settings[1]:
         "Maximum sampled frames",
         [120, 240, 360, 600],
         index=1,
+    )
+
+with settings[2]:
+    analysis_mode = st.selectbox(
+        "Analysis mode",
+        ["Fast (best on free hosting)", "Accurate (slower)"],
+        index=0,
+        help="Fast uses MediaPipe's lighter pose model and is roughly 2 to 3 times "
+             "quicker on a small server. Accurate is slower but can track limbs better.",
     )
 
 st.caption(
@@ -1393,6 +1705,7 @@ if source is not None:
                 stride=int(stride),
                 max_frames=int(max_frames),
                 progress_callback=on_progress,
+                model_complexity=0 if analysis_mode.startswith("Fast") else 1,
             )
 
             if not isinstance(analysis_result, dict):
@@ -1703,6 +2016,7 @@ below marks the likely release zone.</div>
                 + (f" Reason: {analysis.get('overlay_error')}" if analysis.get("overlay_error") else "")
             )
 
+    @st.fragment
     def render_3d_panel(view_height):
         st.markdown(
             '<div class="panel"><h3>3D SKELETON REPLAY (APPROXIMATE)</h3></div>',
@@ -1723,32 +2037,45 @@ below marks the likely release zone.</div>
             return [None if pd.isna(value) else float(value) for value in values]
 
         try:
-            display_poses = prepare_3d_display(pose_3d[:frame_total])
-            figure_3d = build_3d_figure(
-                display_poses,
-                pose_connections,
-                side_list,
-                build_3d_readouts(df, frame_total),
-                frame_ms,
-                [
-                    float(value) if pd.notna(value) else float(index)
-                    for index, value in enumerate(df["time_seconds"].tolist()[:frame_total])
-                ],
-                clean(df["elbow_angle_3d_deg"].tolist()[:frame_total]),
-                clean(df["elbow_angle_deg"].tolist()[:frame_total]),
-                view_height,
+            reliable_flags = df["reliable"].tolist()[:frame_total]
+            masked_poses = [
+                pose if (index < len(reliable_flags) and reliable_flags[index]) else None
+                for index, pose in enumerate(pose_3d[:frame_total])
+            ]
+            display_poses = prepare_3d_display(masked_poses)
+            if not any(pose is not None for pose in display_poses):
+                st.info("No frames with reliable tracking, so the 3D view cannot be drawn.")
+                return
+            release_row = next((m["row"] for m in key_moments if m["key"] == "release"), None)
+            start_row = release_row if release_row is not None and release_row < frame_total else next(
+                index for index, pose in enumerate(display_poses) if pose is not None)
+            components.html(
+                build_3d_canvas_html(
+                    display_poses,
+                    pose_connections,
+                    side_list,
+                    build_3d_labels(df, frame_total),
+                    [
+                        float(value) if pd.notna(value) else float(index)
+                        for index, value in enumerate(df["time_seconds"].tolist()[:frame_total])
+                    ],
+                    df["elbow_angle_3d_deg"].tolist()[:frame_total],
+                    df["elbow_angle_deg"].tolist()[:frame_total],
+                    frame_ms,
+                    view_height,
+                    start_row,
+                ),
+                height=view_height,
             )
-            call_stretch(st.plotly_chart, figure_3d, key="chart_3d_skeleton")
             st.caption(
-                "Drag to rotate, scroll to zoom, use the view buttons (3/4, Side-on, "
-                "Front, Top), then Play or Slow-mo. Cyan is the left side, coral the "
-                "right side, gold the measured arm with its wrist trail, and the grey "
-                "shadow on the floor helps judge depth. The gold cursor on the elbow "
-                "graph moves with the skeleton. For display only, the pose is lightly "
-                "smoothed and held through very short tracking gaps; the CSV keeps raw "
-                "values. This 3D pose is estimated from a single camera, so depth is "
-                "approximate and the skeleton is hip-centred (movement across the "
-                "crease is not shown). It is not validated biomechanics."
+                "Drag to rotate, scroll to zoom, use the view buttons (3/4, Side-on, Front, "
+                "Top), then Play or Slow-mo. It starts at the likely release. The red arm is "
+                "the measured bowling arm and the cyan dot its wrist, with a wrist trail. Click "
+                "or drag on the elbow graph to jump to a moment. Frames with unreliable "
+                "tracking are left out, and the pose is lightly smoothed for display only; the "
+                "CSV keeps raw values. This 3D pose is estimated from a single camera, so "
+                "depth is approximate and the skeleton is hip-centred. It is not validated "
+                "biomechanics."
             )
         except Exception as error:  # noqa: BLE001 - never break the page
             st.warning(f"The 3D view could not be drawn: {error}")
@@ -1850,23 +2177,22 @@ below marks the likely release zone.</div>
 
     # -------------------- ANGLE GRAPHS --------------------
 
-    st.markdown("### MOVEMENT ANALYSIS — GRAPHS")
+    st.markdown("### MOVEMENT ANALYSIS — KEY GRAPHS")
     st.caption(
-        "Pink shading marks frames where tracking was unreliable (camera cut, tracker "
-        "switching person, or too few visible landmarks). Those frames are left out; "
-        "the CSV still holds the raw values."
+        "The two graphs a coach needs most: front-knee bend and elbow bend. Pink shading "
+        "marks frames where tracking was unreliable (camera cut, tracker switching person, "
+        "or too few visible landmarks). Those frames are left out; the CSV still holds the "
+        "raw values. Wrist, shoulder and hip graphs are in the advanced section below."
     )
 
-    for column, label in angle_labels.items():
+    def show_angle_graph(column, label, x_range=None):
         plot_data = df[["time_seconds", column]]
-
         if plot_data[column].dropna().empty:
             st.info(
-                f"{label}: insufficient visible landmarks "
+                f"{label}: insufficient reliable landmarks "
                 "to create a measurement graph."
             )
-            continue
-
+            return
         fig = px.line(
             plot_data,
             x="time_seconds",
@@ -1885,57 +2211,94 @@ below marks the likely release zone.</div>
                 x=release_time, line_dash="dash", line_color="#FFD16D",
                 annotation_text="Likely release zone", annotation_position="top",
             )
+        if x_range is not None:
+            in_window = plot_data[
+                plot_data["time_seconds"].between(x_range[0], x_range[1])
+            ][column].dropna()
+            fig.update_xaxes(range=x_range)
+            if not in_window.empty:
+                fig.update_yaxes(range=[
+                    max(0.0, float(in_window.min()) - 10.0),
+                    min(190.0, float(in_window.max()) + 10.0),
+                ])
         call_stretch(st.plotly_chart, style_figure(fig), key=f"chart_{column}")
 
-    # -------------------- 2D VS 3D COMPARISON --------------------
-
-    for column_2d, column_3d, joint_name in (
-        ("elbow_angle_deg", "elbow_angle_3d_deg", "ELBOW"),
-        ("knee_angle_deg", "knee_angle_3d_deg", "KNEE"),
-    ):
-        compare_data = df[["time_seconds", column_2d, column_3d]]
-        if not compare_data[[column_2d, column_3d]].notna().to_numpy().any():
-            continue
-        compare_fig = px.line(
-            compare_data,
-            x="time_seconds",
-            y=[column_2d, column_3d],
-            title=f"{joint_name}: 2D IMAGE VS APPROXIMATE 3D ANGLE",
-            labels={
-                "time_seconds": "Time (seconds)",
-                "value": "Estimated angle (degrees)",
-                "variable": "Source",
-            },
-            template="plotly_dark",
+    @st.fragment
+    def render_key_graphs():
+        # A fragment: changing the range reruns only these two graphs, not the page.
+        graph_range = st.radio(
+            "Graph range",
+            ["Around release (±1 s)", "Full clip"],
+            horizontal=True,
+            key="graph_range",
         )
-        compare_fig.for_each_trace(
-            lambda trace, c2=column_2d: trace.update(
-                name="2D image" if trace.name == c2 else "3D estimate"
+        x_range = None
+        if graph_range.startswith("Around"):
+            if release_time is not None and not df.empty:
+                x_range = [
+                    max(float(df["time_seconds"].min()), release_time - 1.0),
+                    min(float(df["time_seconds"].max()), release_time + 1.0),
+                ]
+            else:
+                st.caption("No likely release zone was found, so the full clip is shown.")
+        show_angle_graph("knee_angle_deg", angle_labels["knee_angle_deg"], x_range)
+        show_angle_graph("elbow_angle_deg", angle_labels["elbow_angle_deg"], x_range)
+
+    render_key_graphs()
+
+    with st.expander("ADVANCED GRAPHS: WRIST, SHOULDER, HIP, 2D VS 3D, VISIBILITY"):
+        st.caption(
+            "Wrist landmarks are small and blurred, and shoulder and hip angles are only "
+            "trunk-position indicators in 2D, so treat these as supporting detail."
+        )
+        for column in ("wrist_angle_deg", "shoulder_angle_deg", "hip_angle_deg"):
+            show_angle_graph(column, angle_labels[column])
+
+        for column_2d, column_3d, joint_name in (
+            ("elbow_angle_deg", "elbow_angle_3d_deg", "ELBOW"),
+            ("knee_angle_deg", "knee_angle_3d_deg", "KNEE"),
+        ):
+            compare_data = df[["time_seconds", column_2d, column_3d]]
+            if not compare_data[[column_2d, column_3d]].notna().to_numpy().any():
+                continue
+            compare_fig = px.line(
+                compare_data,
+                x="time_seconds",
+                y=[column_2d, column_3d],
+                title=f"{joint_name}: 2D IMAGE VS APPROXIMATE 3D ANGLE",
+                labels={
+                    "time_seconds": "Time (seconds)",
+                    "value": "Estimated angle (degrees)",
+                    "variable": "Source",
+                },
+                template="plotly_dark",
             )
-        )
-        compare_fig.update_traces(line_width=3, connectgaps=False)
-        add_unreliable_bands(compare_fig, df)
-        call_stretch(
-            st.plotly_chart, style_figure(compare_fig), key=f"chart_compare_{column_2d}"
-        )
+            compare_fig.for_each_trace(
+                lambda trace, c2=column_2d: trace.update(
+                    name="2D image" if trace.name == c2 else "3D estimate"
+                )
+            )
+            compare_fig.update_traces(line_width=3, connectgaps=False)
+            add_unreliable_bands(compare_fig, df)
+            call_stretch(
+                st.plotly_chart, style_figure(compare_fig),
+                key=f"chart_compare_{column_2d}",
+            )
 
-    # -------------------- VISIBILITY GRAPH --------------------
-
-    visibility_data = df[["time_seconds", "visible_landmarks"]].dropna()
-
-    if not visibility_data.empty:
-        visibility_fig = px.area(
-            visibility_data,
-            x="time_seconds",
-            y="visible_landmarks",
-            title="VISIBLE BODY LANDMARKS PER FRAME",
-            labels={
-                "time_seconds": "Time (seconds)",
-                "visible_landmarks": "Visible landmarks",
-            },
-            template="plotly_dark",
-        )
-        call_stretch(st.plotly_chart, style_figure(visibility_fig), key="chart_visibility")
+        visibility_data = df[["time_seconds", "visible_landmarks"]].dropna()
+        if not visibility_data.empty:
+            visibility_fig = px.area(
+                visibility_data,
+                x="time_seconds",
+                y="visible_landmarks",
+                title="VISIBLE BODY LANDMARKS PER FRAME",
+                labels={
+                    "time_seconds": "Time (seconds)",
+                    "visible_landmarks": "Visible landmarks",
+                },
+                template="plotly_dark",
+            )
+            call_stretch(st.plotly_chart, style_figure(visibility_fig), key="chart_visibility")
 
     # -------------------- DATA TABLE --------------------
 
