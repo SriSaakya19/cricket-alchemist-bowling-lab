@@ -525,7 +525,7 @@ def _open_video_writer(directory: str, fps: float, size: Tuple[int, int]):
 # Step 2: pose analysis and overlay video
 # --------------------------------------------------------------------------
 def analyze_video_bytes(video_bytes: bytes, stride: int = 2, max_frames: int = 240,
-                        progress_callback=None) -> Dict[str, Any]:
+                        progress_callback=None, model_complexity: int = 1) -> Dict[str, Any]:
     """Convenience wrapper: write bytes to a temp file, analyze, clean up."""
     if not video_bytes:
         raise VideoValidationError("There is no video data to analyze.")
@@ -535,13 +535,14 @@ def analyze_video_bytes(video_bytes: bytes, stride: int = 2, max_frames: int = 2
         with open(path, "wb") as handle:
             handle.write(video_bytes)
         return analyze_video(path, stride=stride, max_frames=max_frames,
-                             progress_callback=progress_callback)
+                             progress_callback=progress_callback,
+                             model_complexity=model_complexity)
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
 
 
 def analyze_video(video_path: str, stride: int = 2, max_frames: int = 240,
-                  progress_callback=None) -> Dict[str, Any]:
+                  progress_callback=None, model_complexity: int = 1) -> Dict[str, Any]:
     """
     Analyze a cricket bowling video with MediaPipe Pose.
 
@@ -595,7 +596,7 @@ def analyze_video(video_path: str, stride: int = 2, max_frames: int = 240,
         try:
             pose_model = mp.solutions.pose.Pose(
                 static_image_mode=False,
-                model_complexity=1,
+                model_complexity=0 if int(model_complexity) <= 0 else 1,
                 smooth_landmarks=True,
                 enable_segmentation=False,
                 min_detection_confidence=0.5,
