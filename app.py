@@ -945,6 +945,11 @@ with settings[1]:
         index=1,
     )
 
+st.caption(
+    "Clips are limited to the first 60 seconds and scaled to 960 px wide for analysis. "
+    "Short clips (5 to 20 seconds) process fastest."
+)
+
 with st.expander("🎥 FILMING TIPS: BEST CAMERA ANGLE"):
     st.markdown(
         """
@@ -1150,7 +1155,7 @@ if analysis is not None:
 
     st.caption(
         "Resolution is that of the browser-ready copy used for analysis "
-        "(very large clips are scaled down to 1280 px wide)."
+        "(clips are scaled down to 960 px wide)."
     )
 
     # -------------------- STATUS --------------------
