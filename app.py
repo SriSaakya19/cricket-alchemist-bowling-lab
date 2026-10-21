@@ -1188,6 +1188,88 @@ def build_3d_figure(display_poses, connections, sides, readouts, frame_ms,
     return figure
 
 
+def build_glance(df, detection_pct, reliable_pct, break_count, view_info, release_time):
+    """
+    Plain-language summary for people with no biomechanics background: a verdict on
+    how much to trust this clip, a few facts in everyday words, and what to do next.
+    """
+    if df.empty or detection_pct <= 0:
+        return {
+            "level": "poor",
+            "headline": "❌ No bowler was found in this clip.",
+            "points": [
+                "Try a clip where the whole body is in view, the light is good and the "
+                "bowler is not tiny in the picture."
+            ],
+            "next": [],
+        }
+
+    if reliable_pct >= 75 and detection_pct >= 70 and break_count == 0:
+        level = "good"
+        headline = ("✅ Good clip. The body was followed well, so the numbers below are a "
+                    "useful guide.")
+    elif reliable_pct >= 40:
+        level = "ok"
+        headline = ("⚠️ Usable, but be careful. Some moments could not be followed reliably, "
+                    "so treat the numbers as rough.")
+    else:
+        level = "poor"
+        headline = ("❌ This clip is hard to analyse. Most moments could not be followed "
+                    "reliably, so the numbers may mislead. Try a clip with one bowler and "
+                    "no camera cuts.")
+
+    points = [f"The app followed the bowler's body in {reliable_pct:.0f}% of the frames it checked."]
+    if break_count:
+        points.append(
+            f"The picture seems to jump {break_count} time(s), for example a camera cut or "
+            "another person entering. Those moments are left out and shaded pink on the graphs."
+        )
+
+    if view_info:
+        label = view_info["label"].lower()
+        if "side-on" in label:
+            points.append("The camera looks side-on, which is the best angle for the knee "
+                          "and elbow measurements.")
+        elif "front" in label and "semi" not in label:
+            points.append("The camera looks front-on or from behind. That is good for "
+                          "shoulder and hip alignment but makes knee and elbow bends less "
+                          "reliable. A side-on clip would measure those better.")
+        else:
+            points.append("The camera is at a diagonal. Knee and elbow numbers are "
+                          "rough; a side-on clip would be better.")
+
+    if release_time is not None:
+        points.append(f"The ball seems to leave the hand about {release_time:.1f} s into the "
+                      "clip (an automatic guess).")
+
+    knee = df["knee_angle_deg"].dropna()
+    if len(knee) >= 3:
+        points.append(
+            f"The leg closest to the camera bends to about {knee.min():.0f}° and "
+            f"straightens to about {knee.max():.0f}° (180° is fully straight)."
+        )
+    if release_time is not None:
+        near = df.loc[(df["time_seconds"] - release_time).abs() <= 0.2, "elbow_angle_deg"].dropna()
+        if not near.empty:
+            points.append(
+                f"Around the release, the elbow of the arm closest to the camera is at about "
+                f"{near.iloc[len(near) // 2]:.0f}°."
+            )
+
+    return {
+        "level": level,
+        "headline": headline,
+        "points": points,
+        "next": [
+            "Play your video and the skeleton video side by side and check the skeleton is "
+            "on the bowler.",
+            "In the 3D view, press Play, or drag the slider to the release moment.",
+            "Look at the two graphs: the dashed gold line marks the release guess.",
+            "Press CREATE COACH REPORT at the bottom to get one page you can share.",
+        ],
+    }
+
+
 def detect_key_moments(df):
     """
     Automatic estimates of a few key moments from the landmark data. These are
@@ -1505,39 +1587,35 @@ st.markdown(
 )
 
 st.markdown(
-    '<p class="muted">Upload a video to start your movement review. '
-    'All controls and analysis appear here—no sidebar.</p>',
+    '<p class="muted">Film a bowler, upload the clip, and this tool draws the body\'s '
+    'movement on top of the video and measures how the joints bend. '
+    'No experience needed: follow the three steps below.</p>',
     unsafe_allow_html=True,
 )
 
-# -------------------- FEATURE CARDS --------------------
+# -------------------- HOW IT WORKS --------------------
 
-features = st.columns(4)
+steps = st.columns(3)
 
-feature_info = [
+step_info = [
     (
-        "01 / VIDEO",
-        "Original + Skeleton",
-        "Compare source footage with the estimated pose overlay.",
+        "STEP 1",
+        "Upload a short clip",
+        "5 to 20 seconds, one bowler, camera held still from the side, whole body in view.",
     ),
     (
-        "02 / JOINTS",
-        "Wrist + Elbow",
-        "Inspect approximate 2D joint angles.",
+        "STEP 2",
+        "Press the gold button",
+        "The app finds the bowler's body in every frame. This takes about 1 to 3 minutes.",
     ),
     (
-        "03 / GRAPHS",
-        "Movement Timeline",
-        "Explore measurements across sampled frames.",
-    ),
-    (
-        "04 / EXPORT",
-        "Session Data",
-        "Download frame-level measurements as CSV.",
+        "STEP 3",
+        "Start with the summary",
+        "Read RESULTS AT A GLANCE first. Everything below it is extra detail you can skip.",
     ),
 ]
 
-for col, (tag, title, description) in zip(features, feature_info):
+for col, (tag, title, description) in zip(steps, step_info):
     with col:
         st.markdown(
             f'<div class="panel">'
@@ -1548,12 +1626,32 @@ for col, (tag, title, description) in zip(features, feature_info):
             unsafe_allow_html=True,
         )
 
-with st.expander("IMPORTANT: MEASUREMENT LIMITATIONS"):
+with st.expander("📖 WHAT DO THESE WORDS MEAN?"):
+    st.markdown(
+        """
+- **Skeleton:** dots and lines the app draws on the body (shoulders, elbows, wrists, hips,
+  knees, ankles) so you can see what it is measuring.
+- **Joint angle:** how much a joint is bent. **180° is completely straight.** The smaller the
+  number, the more bent the joint is.
+- **Release:** the moment the ball leaves the hand. The app only *guesses* this from where the
+  arm is highest.
+- **Side-on / front-on:** where the camera stands. Side-on (at right angles to the run-up) is
+  best for knee and elbow bend.
+- **3D view:** a stick figure rebuilt from your one video. Depth is estimated, so it is a rough
+  guide, not an exact model.
+- **Pink shading on graphs:** moments the app could not track the bowler reliably (the shot
+  changed, another person walked in, or the body was hidden). Those moments are left out.
+- **Frame:** one still picture from the video. A video is made of many frames per second.
+        """
+    )
+
+with st.expander("IMPORTANT: WHAT THIS CAN AND CANNOT TELL YOU"):
     st.write(
-        "This prototype estimates pose landmarks, including an approximate 3D view, from a single camera. "
-        "It does not provide validated 3D biomechanics, reliable ball speed, "
-        "injury prediction or official bowling-action legality. "
-        "A coach should verify findings against the original video."
+        "This is a prototype that estimates body position from a single camera. "
+        "It can show you how the body moves and roughly how much the joints bend. "
+        "It cannot judge injury risk, say whether a bowling action is legal, or measure ball "
+        "speed, and its 3D view is approximate. Treat the numbers as a guide and let a "
+        "coach check them against the original video."
     )
 
 # -------------------- VIDEO UPLOAD --------------------
@@ -1566,38 +1664,41 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-settings = st.columns(3)
+with st.expander("⚙ ADVANCED SETTINGS (optional, the defaults are fine)"):
+    settings = st.columns(3)
 
-with settings[0]:
-    stride = st.selectbox(
-        "Frame sampling stride",
-        [1, 2, 3, 4, 5],
-        index=1,
-        help="1 processes every frame; higher numbers sample fewer frames.",
-    )
+    with settings[0]:
+        stride = st.selectbox(
+            "How many frames to skip",
+            [1, 2, 3, 4, 5],
+            index=1,
+            help="1 checks every frame (most detail, slowest). Higher numbers skip frames "
+                 "and finish faster.",
+        )
 
-with settings[1]:
-    max_frames = st.selectbox(
-        "Maximum sampled frames",
-        [120, 240, 360, 600],
-        index=1,
-    )
+    with settings[1]:
+        max_frames = st.selectbox(
+            "Longest section to analyse (frames)",
+            [120, 240, 360, 600],
+            index=1,
+            help="The analysis stops after this many checked frames.",
+        )
 
-with settings[2]:
-    analysis_mode = st.selectbox(
-        "Analysis mode",
-        ["Fast (best on free hosting)", "Accurate (slower)"],
-        index=0,
-        help="Fast uses MediaPipe's lighter pose model and is roughly 2 to 3 times "
-             "quicker on a small server. Accurate is slower but can track limbs better.",
-    )
+    with settings[2]:
+        analysis_mode = st.selectbox(
+            "Speed or accuracy",
+            ["Fast (best on free hosting)", "Accurate (slower)"],
+            index=0,
+            help="Fast uses a lighter body-finding model and is roughly 2 to 3 times "
+                 "quicker on a small server. Accurate is slower but can track limbs better.",
+        )
 
 st.caption(
-    "Clips are limited to the first 60 seconds and scaled to 960 px wide for analysis. "
-    "Short clips (5 to 20 seconds) process fastest."
+    "Best results: one bowler, camera held still from the side, whole body in view, good "
+    "light. Clips are limited to the first 60 seconds; short clips (5 to 20 seconds) are fastest."
 )
 
-with st.expander("🎥 FILMING TIPS: BEST CAMERA ANGLE"):
+with st.expander("🎥 HOW TO FILM A GOOD CLIP (read this first)"):
     st.markdown(
         """
 **Which angle should I film from?** It depends on what you want to measure, because a
@@ -1803,27 +1904,30 @@ if analysis is not None:
 
     st.markdown(
         '<div class="section-title">02 — '
-        '<span class="gold">ANALYSIS ROOM</span></div>',
+        '<span class="gold">YOUR RESULTS</span></div>',
         unsafe_allow_html=True,
     )
 
+    glance_slot = st.container()
+
     # -------------------- METRICS --------------------
 
-    metrics = st.columns(5)
+    with st.expander("TECHNICAL DETAILS ABOUT THIS ANALYSIS"):
+        metrics = st.columns(5)
 
-    metrics[0].metric("CLIP LENGTH", f"{duration_value:.1f} s")
-    metrics[1].metric("SAMPLED FRAMES", str(analysis.get("sampled_frames", len(df))))
-    metrics[2].metric("POSE DETECTION", f"{detection_pct:.0f}%")
-    metrics[3].metric(
-        "RESOLUTION",
-        f"{analysis.get('width', 0)} × {analysis.get('height', 0)}",
-    )
-    metrics[4].metric("WRIST SAMPLES", str(int(df["wrist_angle_deg"].notna().sum())))
+        metrics[0].metric("CLIP LENGTH", f"{duration_value:.1f} s")
+        metrics[1].metric("SAMPLED FRAMES", str(analysis.get("sampled_frames", len(df))))
+        metrics[2].metric("POSE DETECTION", f"{detection_pct:.0f}%")
+        metrics[3].metric(
+            "RESOLUTION",
+            f"{analysis.get('width', 0)} × {analysis.get('height', 0)}",
+        )
+        metrics[4].metric("WRIST SAMPLES", str(int(df["wrist_angle_deg"].notna().sum())))
 
-    st.caption(
-        "Resolution is that of the browser-ready copy used for analysis "
-        "(clips are scaled down to 960 px wide)."
-    )
+        st.caption(
+            "Resolution is that of the browser-ready copy used for analysis "
+            "(clips are scaled down to 960 px wide)."
+        )
 
     # -------------------- STATUS --------------------
 
@@ -1840,9 +1944,9 @@ if analysis is not None:
             "Try a brighter clip with the whole player visible."
         )
     else:
-        st.info(
-            "Pose detection percentage is the share of sampled frames "
-            "with detected landmarks. It is not an accuracy score."
+        st.caption(
+            f"The app found a body in {detection_pct:.0f}% of the frames it checked. "
+            "That is how often it found someone, not an accuracy score."
         )
 
     if analysis.get("truncated"):
@@ -1875,7 +1979,8 @@ if analysis is not None:
 
     # -------------------- CAMERA VIEW CHECK --------------------
 
-    st.markdown("### CAMERA VIEW CHECK")
+    st.markdown("### CAMERA ANGLE")
+    st.caption("Where the camera was standing changes which measurements you can trust.")
 
     view_info = describe_camera_view(df)
     if view_info is None:
@@ -1889,11 +1994,9 @@ if analysis is not None:
             f"""
 <div class="panel">
 <h3>{html.escape(view_info["label"].upper())}</h3>
-<div class="muted">Estimated from the angle between the shoulder and hip line and the
-image plane: median {view_info["median"]:.0f}° (middle 80% of frames
-{view_info["low"]:.0f}° to {view_info["high"]:.0f}°). 0° means front-on or behind-on,
-90° means side-on. This is a rough estimate from a single camera, and the view changes
-as the bowler turns.</div>
+<div class="muted">This is the app's guess at where the camera stood, worked out from
+the angle of the bowler's shoulders and hips. It changes as the bowler turns, so treat it
+as a rough guide.</div>
 <ul>{view_items}</ul>
 </div>
 """,
@@ -1902,12 +2005,40 @@ as the bowler turns.</div>
 
     # -------------------- KEY MOMENTS --------------------
 
-    st.markdown("### KEY MOMENTS (AUTOMATIC ESTIMATES)")
+    st.markdown("### KEY MOMENTS (AUTOMATIC GUESSES)")
+    st.caption(
+        "Moments the app picked from the body movement. Use the time shown to jump to that "
+        "point in the videos. They are guesses, not verified."
+    )
 
     key_moments = detect_key_moments(df)
     release_time = next(
         (moment["time"] for moment in key_moments if moment["key"] == "release"), None
     )
+    glance = build_glance(df, detection_pct, reliable_pct, break_count, view_info, release_time)
+    with glance_slot:
+        glance_points = "".join(f"<li>{html.escape(item)}</li>" for item in glance["points"])
+        glance_next = "".join(f"<li>{html.escape(item)}</li>" for item in glance["next"])
+        next_html = (
+            '<div class="kicker" style="margin-top:.8rem">WHAT TO DO NEXT</div>'
+            f'<ol style="margin:.4rem 0 .6rem 1.1rem;padding:0;color:#E0EAF7;line-height:1.65">'
+            f"{glance_next}</ol>"
+            if glance_next else ""
+        )
+        st.markdown(
+            f"""
+<div class="panel">
+<h3>RESULTS AT A GLANCE</h3>
+<p style="font-size:1.15rem;font-weight:700;color:#FFFFFF;margin:.2rem 0 .6rem">{html.escape(glance["headline"])}</p>
+<ul>{glance_points}</ul>
+{next_html}
+<div class="muted">These are guides, not a verdict. The app does not judge injury risk or
+whether a bowling action is legal. Ask a coach to check against the original video.</div>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
+
     if not key_moments:
         st.info("No key moments could be estimated because too few landmarks were visible.")
     else:
@@ -2119,7 +2250,12 @@ below marks the likely release zone.</div>
             )
 
     if has_3d:
-        st.markdown("### ORIGINAL VS SKELETON VS 3D")
+        st.markdown("### YOUR VIDEO, THE SKELETON, AND THE 3D VIEW")
+        st.caption(
+            "Left: your original clip, then the same clip with the body drawn on. "
+            "Right: a 3D stick figure rebuilt from the clip. Check the skeleton sits on the "
+            "right person before trusting any numbers."
+        )
 
         size_label = st.select_slider(
             "3D view size",
@@ -2136,7 +2272,11 @@ below marks the likely release zone.</div>
         with view_col:
             render_3d_panel(view_height)
     else:
-        st.markdown("### ORIGINAL VIDEO VS SKELETON")
+        st.markdown("### YOUR VIDEO AND THE SKELETON")
+        st.caption(
+            "Left: your original clip. Right: the same clip with the body drawn on. "
+            "Check the skeleton sits on the right person before trusting any numbers."
+        )
 
         original_col, skeleton_col = st.columns(2, gap="medium")
         with original_col:
@@ -2152,7 +2292,11 @@ below marks the likely release zone.</div>
 
     # -------------------- JOINT ANGLES --------------------
 
-    st.markdown("### JOINT-ANGLE SNAPSHOT")
+    st.markdown("### HOW BENT IS EACH JOINT?")
+    st.caption(
+        "An angle shows how much a joint is bent. 180° is completely straight; smaller "
+        "numbers mean more bent."
+    )
 
     angle_labels = {
         "wrist_angle_deg": "WRIST ANGLE",
@@ -2177,9 +2321,10 @@ below marks the likely release zone.</div>
 
     # -------------------- ANGLE GRAPHS --------------------
 
-    st.markdown("### MOVEMENT ANALYSIS — KEY GRAPHS")
+    st.markdown("### HOW THE KNEE AND ELBOW MOVE")
     st.caption(
-        "The two graphs a coach needs most: front-knee bend and elbow bend. Pink shading "
+        "How to read these: each line shows how bent a joint is over time (180° = straight, "
+        "lower = more bent), and the dashed gold line is the likely release. Pink shading "
         "marks frames where tracking was unreliable (camera cut, tracker switching person, "
         "or too few visible landmarks). Those frames are left out; the CSV still holds the "
         "raw values. Wrist, shoulder and hip graphs are in the advanced section below."
@@ -2302,16 +2447,15 @@ below marks the likely release zone.</div>
 
     # -------------------- DATA TABLE --------------------
 
-    st.markdown("### COMPLETE FRAME-LEVEL DATA")
-
-    if df.empty:
-        st.info("There are no sampled measurements to display.")
-    else:
-        display_df = raw_df.copy()
-        display_df[angle_columns + angle_3d_columns] = display_df[
-            angle_columns + angle_3d_columns
-        ].round(1)
-        call_stretch(st.dataframe, display_df, hide_index=True)
+    with st.expander("RAW NUMBERS FOR EVERY FRAME (for coaches and analysts)"):
+        if df.empty:
+            st.info("There are no sampled measurements to display.")
+        else:
+            display_df = raw_df.copy()
+            display_df[angle_columns + angle_3d_columns] = display_df[
+                angle_columns + angle_3d_columns
+            ].round(1)
+            call_stretch(st.dataframe, display_df, hide_index=True)
 
     # -------------------- CSV EXPORT --------------------
 
@@ -2329,7 +2473,7 @@ below marks the likely release zone.</div>
     st.markdown(
         f"""
 <div class="panel">
-<h3>COACHING REVIEW</h3>
+<h3>COACHING NOTES (MORE DETAIL)</h3>
 <ul>{notes_html}</ul>
 </div>
 """,
