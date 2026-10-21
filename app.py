@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import html
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
@@ -16,6 +17,7 @@ from dynamic_processor import (
     ProcessorError,
     analyze_video_bytes,
     convert_uploaded_video,
+    extract_video_frames,
     find_ffmpeg,
     render_3d_video,
 )
@@ -343,6 +345,133 @@ def style_figure(figure):
         font_color="#F2F7FF",
         margin=dict(l=10, r=10, t=55, b=10),
     )
+    return figure
+
+
+# Columns that are blanked on frames where the tracking cannot be trusted.
+TRACKED_COLUMNS = [
+    "wrist_angle_deg", "elbow_angle_deg", "shoulder_angle_deg",
+    "knee_angle_deg", "hip_angle_deg",
+    "wrist_angle_3d_deg", "elbow_angle_3d_deg", "shoulder_angle_3d_deg",
+    "knee_angle_3d_deg", "hip_angle_3d_deg",
+    "view_yaw_deg", "wrist_above_shoulder",
+]
+
+
+def mark_tracking(df, jump_limit=0.18, size_change=0.35, min_visible=20, min_segment=6):
+    """
+    Flag frames whose measurements cannot be trusted and add three columns:
+
+      tracking_break  True when the body jumps position or size between two
+                      measured frames (a camera cut, or the tracker switching to
+                      another person), so the new frame is a different "track".
+      segment_id      counts up at every break; one id = one continuous track.
+      reliable        True only when a pose was found, enough landmarks are
+                      visible, the frame belongs to a track of at least
+                      `min_segment` samples (shorter ones are flicker), and that
+                      track is the main one (the longest) or sits close to it in
+                      body position and size. A different shot or another person
+                      therefore drops out even when it lasts a few seconds.
+
+    The thresholds are fractions of the frame (jump_limit) and of the torso length
+    (size_change), measured between consecutive sampled frames.
+    """
+    out = df.copy().reset_index(drop=True)
+    count = len(out)
+    breaks = np.zeros(count, dtype=bool)
+    previous = None
+    for i in range(count):
+        if not bool(out.at[i, "pose_detected"]):
+            continue
+        x, y, torso = (float(out.at[i, c]) for c in ("hip_x", "hip_y", "torso_len"))
+        if not (np.isfinite(x) and np.isfinite(y) and np.isfinite(torso)):
+            continue
+        if previous is not None:
+            moved = float(np.hypot(x - previous[0], y - previous[1]))
+            resized = abs(torso - previous[2]) / max(previous[2], 1e-6)
+            if moved > jump_limit or resized > size_change:
+                breaks[i] = True
+        previous = (x, y, torso)
+
+    out["tracking_break"] = breaks
+    out["segment_id"] = np.cumsum(breaks)
+
+    good = out["pose_detected"].to_numpy(bool) & (
+        out["visible_landmarks"].fillna(0).to_numpy(float) >= min_visible
+    )
+    seg = out["segment_id"].to_numpy()
+    sizes = pd.Series(good).groupby(seg).transform("sum").to_numpy()
+    reliable = good & (sizes >= min_segment)
+
+    # Keep only the "main" track: the longest continuous one. Any other track (for
+    # example a different shot, or another person) is trusted only when its body
+    # position and size are close to the main track's.
+    if reliable.any():
+        main_id = pd.Series(sizes[reliable]).groupby(seg[reliable]).first().idxmax()
+        position = out.loc[reliable, ["hip_x", "hip_y", "torso_len"]]
+        position = position.groupby(seg[reliable]).median()
+        main = position.loc[main_id]
+        for segment_id, row in position.iterrows():
+            if segment_id == main_id or row.isna().any() or main.isna().any():
+                continue
+            moved = float(np.hypot(row["hip_x"] - main["hip_x"], row["hip_y"] - main["hip_y"]))
+            resized = abs(row["torso_len"] - main["torso_len"]) / max(float(main["torso_len"]), 1e-6)
+            if moved > jump_limit or resized > size_change:
+                reliable &= seg != segment_id
+    out["reliable"] = reliable
+    return out
+
+
+def clean_for_analysis(df, spike_limit=50.0, spike_agree=25.0):
+    """
+    Return a copy where measurements from unreliable frames are blank (NaN) and
+    one-sample spikes inside a track are removed. The raw frame table is kept
+    separately, so the CSV still has every raw value.
+    """
+    out = df.copy()
+    unreliable = ~out["reliable"].to_numpy(bool)
+    for column in TRACKED_COLUMNS:
+        if column in out.columns:
+            out.loc[unreliable, column] = np.nan
+
+    segment = out["segment_id"]
+    same_prev = segment.eq(segment.shift(1)).to_numpy()
+    same_next = segment.eq(segment.shift(-1)).to_numpy()
+    for column in TRACKED_COLUMNS:
+        if column not in out.columns or not column.endswith("_deg") or "yaw" in column:
+            continue
+        values = out[column]
+        before, after = values.shift(1), values.shift(-1)
+        spike = (
+            same_prev & same_next
+            & ((values - before).abs() > spike_limit)
+            & ((values - after).abs() > spike_limit)
+            & ((before - after).abs() < spike_agree)
+        )
+        out.loc[spike, column] = np.nan
+    return out
+
+
+def add_unreliable_bands(figure, df):
+    """Shade the time ranges where tracking was unreliable on a Plotly figure."""
+    if df.empty or "reliable" not in df.columns or len(df) < 2:
+        return figure
+    times = df["time_seconds"].to_numpy(float)
+    ok = df["reliable"].to_numpy(bool)
+    steps = np.diff(times)
+    steps = steps[steps > 0]
+    half = float(np.median(steps)) / 2.0 if len(steps) else 0.0
+    start = None
+    for i in range(len(ok) + 1):
+        bad = i < len(ok) and not ok[i]
+        if bad and start is None:
+            start = i
+        elif not bad and start is not None:
+            figure.add_vrect(
+                x0=times[start] - half, x1=times[i - 1] + half,
+                fillcolor="rgba(255,127,150,0.16)", line_width=0, layer="below",
+            )
+            start = None
     return figure
 
 
@@ -756,6 +885,203 @@ def build_3d_figure(display_poses, connections, sides, readouts, frame_ms,
     return figure
 
 
+def detect_key_moments(df):
+    """
+    Automatic estimates of a few key moments from the landmark data. These are
+    not verified bowling phases: run-up, delivery stride and foot contact are
+    deliberately not detected because one camera cannot locate them reliably.
+    """
+    moments = []
+
+    def add(key, label, row, detail):
+        frame_value = df.at[row, "frame"]
+        moments.append({
+            "key": key,
+            "label": label,
+            "row": int(row),
+            "frame": int(frame_value) if pd.notna(frame_value) else int(row),
+            "time": float(df.at[row, "time_seconds"]),
+            "detail": detail,
+        })
+
+    arm = df["wrist_above_shoulder"]
+    if arm.notna().sum() >= 3 and arm.max() >= 0.2:
+        row = arm.idxmax()
+        add("release", "Likely release zone", row,
+            f"Bowling arm at its highest point (wrist {arm.loc[row]:.1f} torso-lengths "
+            "above the shoulder).")
+
+    knee = df["knee_angle_deg"]
+    if knee.notna().sum() >= 3:
+        row = knee.idxmin()
+        add("knee", "Deepest knee bend", row,
+            f"Smallest knee angle {knee.loc[row]:.0f}° on the measured side.")
+
+    elbow = df["elbow_angle_deg"]
+    if elbow.notna().sum() >= 3:
+        row = elbow.idxmin()
+        add("elbow_min", "Most bent elbow", row,
+            f"Smallest elbow angle {elbow.loc[row]:.0f}° (2D image).")
+        row = elbow.idxmax()
+        add("elbow_max", "Straightest elbow", row,
+            f"Largest elbow angle {elbow.loc[row]:.0f}° (2D image).")
+
+    detected = df[df["pose_detected"]]
+    if len(detected) >= 3:
+        row = detected["visible_landmarks"].idxmin()
+        add("lowconf", "Lowest landmark visibility", row,
+            f"Only {int(df.at[row, 'visible_landmarks'])} of 33 landmarks clearly visible; "
+            "check this frame by eye.")
+
+    return sorted(moments, key=lambda item: item["time"])
+
+
+def build_coach_report_html(analysis, df, detection_pct, notes, view_info,
+                            moments, frame_images, release_time):
+    """One self-contained, print-friendly HTML report (images and graphs embedded)."""
+    esc = html.escape
+    angle_pairs = [
+        ("WRIST", "wrist_angle_deg", "wrist_angle_3d_deg"),
+        ("ELBOW", "elbow_angle_deg", "elbow_angle_3d_deg"),
+        ("SHOULDER", "shoulder_angle_deg", "shoulder_angle_3d_deg"),
+        ("KNEE", "knee_angle_deg", "knee_angle_3d_deg"),
+        ("HIP", "hip_angle_deg", "hip_angle_3d_deg"),
+    ]
+
+    sides = df.loc[df["pose_detected"], "measured_side"]
+    sides = sides[sides.isin(["left", "right"])]
+    main_side = sides.value_counts().idxmax() if not sides.empty else "not determined"
+
+    summary_rows = [
+        ("Clip", analysis.get("filename", "")),
+        ("Clip length", f"{float(analysis.get('duration_seconds') or 0):.1f} s"),
+        ("Sampled frames", str(analysis.get("sampled_frames", len(df)))),
+        ("Pose detection", f"{detection_pct:.0f}% of sampled frames"),
+        ("Resolution analysed", f"{analysis.get('width', 0)} × {analysis.get('height', 0)}"),
+        ("Mostly measured side", main_side),
+    ]
+    summary_html = "".join(
+        f"<tr><th>{esc(str(k))}</th><td>{esc(str(v))}</td></tr>" for k, v in summary_rows
+    )
+
+    def stat(series):
+        values = series.dropna()
+        if values.empty:
+            return "—", "—", "—", "0"
+        return (f"{values.min():.0f}°", f"{values.max():.0f}°",
+                f"{values.mean():.0f}°", str(len(values)))
+
+    stats_rows = ""
+    for label, col_2d, col_3d in angle_pairs:
+        a, b = stat(df[col_2d]), stat(df[col_3d])
+        stats_rows += (
+            f"<tr><th>{label}</th><td>{a[0]}</td><td>{a[1]}</td><td>{a[2]}</td><td>{a[3]}</td>"
+            f"<td>{b[0]}</td><td>{b[1]}</td><td>{b[2]}</td><td>{b[3]}</td></tr>"
+        )
+
+    if view_info:
+        view_html = (
+            f"<p><b>{esc(view_info['label'])}</b> (median {view_info['median']:.0f}° "
+            "from the image plane: 0° is front-on or behind-on, 90° is side-on).</p><ul>"
+            + "".join(f"<li>{esc(n)}</li>" for n in view_info["notes"]) + "</ul>"
+        )
+    else:
+        view_html = "<p>The camera view could not be estimated for this clip.</p>"
+
+    moment_html = ""
+    for moment in moments:
+        image = frame_images.get(moment["row"])
+        image_tag = (
+            f'<img src="data:image/jpeg;base64,{base64.b64encode(image).decode("ascii")}" alt="">'
+            if image else ""
+        )
+        moment_html += (
+            '<div class="moment">'
+            f"{image_tag}<div><h3>{esc(moment['label'])}</h3>"
+            f"<p><b>{moment['time']:.2f} s</b> (frame {moment['frame']})</p>"
+            f"<p>{esc(moment['detail'])}</p></div></div>"
+        )
+    if not moment_html:
+        moment_html = "<p>No key moments could be estimated for this clip.</p>"
+
+    charts_html, first_chart = "", True
+    for label, col_2d, col_3d in angle_pairs:
+        if df[col_2d].dropna().empty and df[col_3d].dropna().empty:
+            continue
+        figure = go.Figure()
+        figure.add_trace(go.Scatter(x=df["time_seconds"], y=df[col_2d], mode="lines",
+                                    name="2D image", connectgaps=False,
+                                    line=dict(color="#1F6FB2", width=3)))
+        figure.add_trace(go.Scatter(x=df["time_seconds"], y=df[col_3d], mode="lines",
+                                    name="3D estimate", connectgaps=False,
+                                    line=dict(color="#C98A00", width=2, dash="dot")))
+        if release_time is not None:
+            figure.add_vline(x=release_time, line_dash="dash", line_color="#888888",
+                             annotation_text="Likely release zone",
+                             annotation_position="top")
+        figure.update_layout(
+            title=f"{label} ANGLE", height=320, template="plotly_white",
+            margin=dict(l=50, r=20, t=50, b=40),
+            xaxis_title="Time (s)", yaxis_title="Angle (degrees)",
+        )
+        charts_html += figure.to_html(
+            full_html=False, include_plotlyjs=True if first_chart else False,
+            config={"displaylogo": False},
+        )
+        first_chart = False
+    if not charts_html:
+        charts_html = "<p>There were not enough visible landmarks to draw graphs.</p>"
+
+    notes_html = "".join(f"<li>{esc(n)}</li>" for n in notes)
+
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<title>Cricket Alchemist Bowling Lab: Coach Report</title>
+<style>
+body {{ font-family: Arial, Helvetica, sans-serif; color:#14202e; max-width: 980px;
+  margin: 24px auto; padding: 0 18px; line-height: 1.5; }}
+h1 {{ margin-bottom: 0; }} .sub {{ color:#5b6b7c; margin-top:4px; }}
+h2 {{ border-bottom: 2px solid #E8B54F; padding-bottom: 4px; margin-top: 32px; }}
+table {{ border-collapse: collapse; width: 100%; font-size: 14px; }}
+th, td {{ border: 1px solid #d5dde6; padding: 6px 10px; text-align: left; }}
+th {{ background: #f1f4f8; }}
+.moment {{ display:flex; gap:16px; align-items:flex-start; margin: 14px 0;
+  page-break-inside: avoid; }}
+.moment img {{ width: 300px; max-width: 45%; border-radius: 8px; }}
+.note {{ background:#fff7e0; border:1px solid #E8B54F; border-radius:8px; padding:10px 14px; }}
+@media print {{ body {{ margin: 0; }} }}
+</style></head><body>
+<h1>The Cricket Alchemist: Bowling Lab</h1>
+<p class="sub">Coach report generated {datetime.now().strftime("%d %b %Y, %H:%M")}</p>
+
+<h2>Summary</h2><table>{summary_html}</table>
+
+<h2>Camera view</h2>{view_html}
+
+<h2>Key moments (automatic estimates)</h2>
+<p class="note">These moments are picked automatically from landmark data. They are not
+verified bowling phases. Run-up, delivery stride and foot contact are not detected because
+one camera cannot locate them reliably.</p>
+{moment_html}
+
+<h2>Joint-angle statistics</h2>
+<table><tr><th rowspan="2">Joint</th><th colspan="4">2D image angle</th>
+<th colspan="4">Approximate 3D angle</th></tr>
+<tr><th>Min</th><th>Max</th><th>Mean</th><th>Frames</th>
+<th>Min</th><th>Max</th><th>Mean</th><th>Frames</th></tr>{stats_rows}</table>
+
+<h2>Graphs</h2>{charts_html}
+
+<h2>Coaching review notes</h2><ul>{notes_html}</ul>
+
+<h2>Limitations</h2>
+<p class="note">Angles are estimated from pose landmarks in a single camera view. The 3D
+view is approximate, with depth estimated from one camera. This report is a review aid
+for coaches. It is not validated biomechanics, an injury assessment, or a ruling on
+whether a bowling action is legal. Please verify findings against the original footage.</p>
+</body></html>"""
+
+
 def build_coaching_notes(df, detection_pct):
     """Concise, non-diagnostic review notes derived from the measurements."""
     notes = []
@@ -773,6 +1099,15 @@ def build_coaching_notes(df, detection_pct):
             f"Pose was detected in only {detection_pct:.0f}% of sampled frames, "
             "so treat every number below with extra caution."
         )
+
+    if "reliable" in df.columns and not df.empty:
+        usable = int(df["reliable"].sum())
+        if usable < len(df):
+            notes.append(
+                f"{usable} of {len(df)} sampled frames had trustworthy tracking. The "
+                "numbers below use only those frames; camera cuts, another person "
+                "entering the shot or hidden landmarks were left out."
+            )
 
     detected = df[df["pose_detected"]]
     sides = detected["measured_side"].astype(str)
@@ -1042,15 +1377,23 @@ if source is not None:
     show_video(source["mp4_bytes"], info["width"], info["height"])
 
     if call_stretch(st.button, "▶ RUN BOWLING ANALYSIS", key="run_bowling_analysis"):
+        progress_bar = st.progress(0.0, text="Starting the analysis...")
+
+        def on_progress(done, total, message=None):
+            fraction = min(max(done / max(total, 1), 0.0), 0.97)
+            progress_bar.progress(
+                fraction,
+                text=message
+                or f"Analysed {done} of {total} sampled frames ({fraction * 100:.0f}%)",
+            )
+
         try:
-            with st.spinner(
-                "Processing video frames and estimating pose landmarks..."
-            ):
-                analysis_result = analyze_video_bytes(
-                    source["mp4_bytes"],
-                    stride=int(stride),
-                    max_frames=int(max_frames),
-                )
+            analysis_result = analyze_video_bytes(
+                source["mp4_bytes"],
+                stride=int(stride),
+                max_frames=int(max_frames),
+                progress_callback=on_progress,
+            )
 
             if not isinstance(analysis_result, dict):
                 raise ProcessorError("The processor returned an unexpected result.")
@@ -1070,6 +1413,8 @@ if source is not None:
                 "Try a short clip with the full player visible "
                 "and good lighting."
             )
+        finally:
+            progress_bar.empty()
 
 # -------------------- ANALYSIS RESULTS --------------------
 
@@ -1094,7 +1439,8 @@ if analysis is not None:
         "hip_angle_3d_deg",
     ]
     numeric_columns = (
-        ["frame", "time_seconds", "visible_landmarks", "view_yaw_deg"]
+        ["frame", "time_seconds", "visible_landmarks", "view_yaw_deg",
+         "wrist_above_shoulder", "hip_x", "hip_y", "torso_len"]
         + angle_columns
         + angle_3d_columns
     )
@@ -1116,10 +1462,18 @@ if analysis is not None:
 
     df = df[
         ["frame", "time_seconds", "pose_detected", "measured_side", "visible_landmarks",
-         "view_yaw_deg"]
+         "view_yaw_deg", "wrist_above_shoulder", "hip_x", "hip_y", "torso_len"]
         + angle_columns
         + angle_3d_columns
     ].reset_index(drop=True)
+
+    # raw_df keeps every raw value (table and CSV). df is the cleaned copy used for
+    # graphs, key moments, snapshots, notes and the report: frames with unreliable
+    # tracking (camera cuts, person switches, low visibility) are blanked out.
+    raw_df = mark_tracking(df)
+    df = clean_for_analysis(raw_df)
+    reliable_pct = float(df["reliable"].mean() * 100) if not df.empty else 0.0
+    break_count = int(df["tracking_break"].sum()) if not df.empty else 0
 
     try:
         duration_value = float(analysis.get("duration_seconds") or 0)
@@ -1190,6 +1544,22 @@ if analysis is not None:
             "and are marked as 'pose not detected'."
         )
 
+    if not df.empty and detection_pct > 0 and reliable_pct < 70:
+        st.warning(
+            f"Only {reliable_pct:.0f}% of sampled frames have trustworthy tracking"
+            + (f" ({break_count} sudden jump(s) in the tracked body, such as a camera "
+               "cut or the tracker moving to another person)" if break_count else "")
+            + ". Unreliable frames are left out of the graphs, key moments and notes "
+            "and shaded pink on the graphs. For best results use one continuous shot "
+            "with only the bowler in view."
+        )
+    elif break_count:
+        st.info(
+            f"{break_count} sudden jump(s) in the tracked body were found (a camera cut "
+            "or the tracker switching person). Frames affected are left out of the "
+            "graphs and shaded pink."
+        )
+
     # -------------------- CAMERA VIEW CHECK --------------------
 
     st.markdown("### CAMERA VIEW CHECK")
@@ -1212,6 +1582,36 @@ image plane: median {view_info["median"]:.0f}° (middle 80% of frames
 90° means side-on. This is a rough estimate from a single camera, and the view changes
 as the bowler turns.</div>
 <ul>{view_items}</ul>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
+
+    # -------------------- KEY MOMENTS --------------------
+
+    st.markdown("### KEY MOMENTS (AUTOMATIC ESTIMATES)")
+
+    key_moments = detect_key_moments(df)
+    release_time = next(
+        (moment["time"] for moment in key_moments if moment["key"] == "release"), None
+    )
+    if not key_moments:
+        st.info("No key moments could be estimated because too few landmarks were visible.")
+    else:
+        moment_items = "".join(
+            f"<li><b>{html.escape(moment['label'])}</b>: {moment['time']:.2f} s "
+            f"(frame {moment['frame']}). {html.escape(moment['detail'])}</li>"
+            for moment in key_moments
+        )
+        st.markdown(
+            f"""
+<div class="panel">
+<h3>KEY MOMENTS</h3>
+<ul>{moment_items}</ul>
+<div class="muted">These are picked automatically from landmark data, so they are
+estimates, not verified bowling phases. Run-up, delivery stride and foot contact are not
+detected because one camera cannot locate them reliably. The dashed line on the graphs
+below marks the likely release zone.</div>
 </div>
 """,
             unsafe_allow_html=True,
@@ -1451,11 +1851,16 @@ as the bowler turns.</div>
     # -------------------- ANGLE GRAPHS --------------------
 
     st.markdown("### MOVEMENT ANALYSIS — GRAPHS")
+    st.caption(
+        "Pink shading marks frames where tracking was unreliable (camera cut, tracker "
+        "switching person, or too few visible landmarks). Those frames are left out; "
+        "the CSV still holds the raw values."
+    )
 
     for column, label in angle_labels.items():
-        plot_data = df[["time_seconds", column]].dropna()
+        plot_data = df[["time_seconds", column]]
 
-        if plot_data.empty:
+        if plot_data[column].dropna().empty:
             st.info(
                 f"{label}: insufficient visible landmarks "
                 "to create a measurement graph."
@@ -1473,7 +1878,13 @@ as the bowler turns.</div>
             },
             template="plotly_dark",
         )
-        fig.update_traces(line_width=3)
+        fig.update_traces(line_width=3, connectgaps=False)
+        add_unreliable_bands(fig, df)
+        if release_time is not None:
+            fig.add_vline(
+                x=release_time, line_dash="dash", line_color="#FFD16D",
+                annotation_text="Likely release zone", annotation_position="top",
+            )
         call_stretch(st.plotly_chart, style_figure(fig), key=f"chart_{column}")
 
     # -------------------- 2D VS 3D COMPARISON --------------------
@@ -1502,7 +1913,8 @@ as the bowler turns.</div>
                 name="2D image" if trace.name == c2 else "3D estimate"
             )
         )
-        compare_fig.update_traces(line_width=3)
+        compare_fig.update_traces(line_width=3, connectgaps=False)
+        add_unreliable_bands(compare_fig, df)
         call_stretch(
             st.plotly_chart, style_figure(compare_fig), key=f"chart_compare_{column_2d}"
         )
@@ -1532,7 +1944,7 @@ as the bowler turns.</div>
     if df.empty:
         st.info("There are no sampled measurements to display.")
     else:
-        display_df = df.copy()
+        display_df = raw_df.copy()
         display_df[angle_columns + angle_3d_columns] = display_df[
             angle_columns + angle_3d_columns
         ].round(1)
@@ -1542,16 +1954,15 @@ as the bowler turns.</div>
 
     download_link(
         "⬇ DOWNLOAD ANALYSIS CSV",
-        df.to_csv(index=False).encode("utf-8"),
+        raw_df.to_csv(index=False).encode("utf-8"),
         "cricket_alchemist_analysis.csv",
         "text/csv",
     )
 
     # -------------------- COACHING REVIEW --------------------
 
-    notes_html = "".join(
-        f"<li>{html.escape(note)}</li>" for note in build_coaching_notes(df, detection_pct)
-    )
+    coaching_notes = build_coaching_notes(df, detection_pct)
+    notes_html = "".join(f"<li>{html.escape(note)}</li>" for note in coaching_notes)
     st.markdown(
         f"""
 <div class="panel">
@@ -1561,6 +1972,44 @@ as the bowler turns.</div>
 """,
         unsafe_allow_html=True,
     )
+
+    # -------------------- COACH REPORT --------------------
+
+    st.markdown("### COACH REPORT")
+    st.caption(
+        "One self-contained page with the summary, camera view, key moments with "
+        "skeleton frames, joint-angle statistics, graphs and limitations. Open it in a "
+        "browser to print it or save it as a PDF."
+    )
+    if call_stretch(st.button, "📄 CREATE COACH REPORT", key="make_coach_report"):
+        try:
+            with st.spinner("Building the coach report..."):
+                frame_rows = [moment["row"] for moment in key_moments]
+                if analysis.get("overlay_video_bytes"):
+                    frame_images = extract_video_frames(
+                        analysis["overlay_video_bytes"], frame_rows
+                    )
+                else:
+                    fallback = analysis.get("overlay_frames") or []
+                    frame_images = {
+                        row: fallback[row] for row in frame_rows if row < len(fallback)
+                    }
+                report_text = build_coach_report_html(
+                    analysis, df, detection_pct, coaching_notes, view_info,
+                    key_moments, frame_images, release_time,
+                )
+            analysis["report_html"] = report_text.encode("utf-8")
+        except Exception as error:  # noqa: BLE001 - shown to the user
+            st.error(f"Could not build the coach report: {error}")
+
+    stored_report = analysis.get("report_html")
+    if stored_report:
+        download_link(
+            "⬇ DOWNLOAD COACH REPORT",
+            stored_report,
+            "cricket_alchemist_coach_report.html",
+            "text/html",
+        )
 
 # -------------------- FOOTER --------------------
 
