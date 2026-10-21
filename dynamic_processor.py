@@ -525,7 +525,8 @@ def _open_video_writer(directory: str, fps: float, size: Tuple[int, int]):
 # Step 2: pose analysis and overlay video
 # --------------------------------------------------------------------------
 def analyze_video_bytes(video_bytes: bytes, stride: int = 2, max_frames: int = 240,
-                        progress_callback=None, model_complexity: int = 1) -> Dict[str, Any]:
+                        progress_callback=None, model_complexity: int = 1,
+                        render_overlay: bool = True) -> Dict[str, Any]:
     """Convenience wrapper: write bytes to a temp file, analyze, clean up."""
     if not video_bytes:
         raise VideoValidationError("There is no video data to analyze.")
@@ -536,13 +537,15 @@ def analyze_video_bytes(video_bytes: bytes, stride: int = 2, max_frames: int = 2
             handle.write(video_bytes)
         return analyze_video(path, stride=stride, max_frames=max_frames,
                              progress_callback=progress_callback,
-                             model_complexity=model_complexity)
+                             model_complexity=model_complexity,
+                             render_overlay=render_overlay)
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
 
 
 def analyze_video(video_path: str, stride: int = 2, max_frames: int = 240,
-                  progress_callback=None, model_complexity: int = 1) -> Dict[str, Any]:
+                  progress_callback=None, model_complexity: int = 1,
+                  render_overlay: bool = True) -> Dict[str, Any]:
     """
     Analyze a cricket bowling video with MediaPipe Pose.
 
@@ -629,7 +632,9 @@ def analyze_video(video_path: str, stride: int = 2, max_frames: int = 240,
         pose_3d_frames = []
         fallback_frames = []
         overlay_size: Optional[Tuple[int, int]] = None
-        writer_error: Optional[str] = None
+        writer_error: Optional[str] = (
+            None if render_overlay else "The skeleton video was skipped for the quick check."
+        )
         frames_written = 0
         frame_errors = 0
         frame_index = 0
@@ -763,15 +768,17 @@ def analyze_video(video_path: str, stride: int = 2, max_frames: int = 240,
 
             # Small JPEG copy for the fallback slider (keeps memory low)
             try:
-                thumb = overlay
-                if thumb.shape[1] > MAX_FALLBACK_WIDTH:
-                    scale = MAX_FALLBACK_WIDTH / thumb.shape[1]
-                    thumb = cv2.resize(
-                        thumb, (MAX_FALLBACK_WIDTH, max(1, int(thumb.shape[0] * scale))),
-                        interpolation=cv2.INTER_AREA)
-                encoded_ok, encoded = cv2.imencode(".jpg", thumb, [cv2.IMWRITE_JPEG_QUALITY, 80])
-                if encoded_ok:
-                    fallback_frames.append(encoded.tobytes())
+                if render_overlay:
+                    thumb = overlay
+                    if thumb.shape[1] > MAX_FALLBACK_WIDTH:
+                        scale = MAX_FALLBACK_WIDTH / thumb.shape[1]
+                        thumb = cv2.resize(
+                            thumb, (MAX_FALLBACK_WIDTH, max(1, int(thumb.shape[0] * scale))),
+                            interpolation=cv2.INTER_AREA)
+                    encoded_ok, encoded = cv2.imencode(
+                        ".jpg", thumb, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                    if encoded_ok:
+                        fallback_frames.append(encoded.tobytes())
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Could not store fallback frame: %s", exc)
 
