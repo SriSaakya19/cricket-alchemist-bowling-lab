@@ -23,8 +23,6 @@ import os
 import shutil
 import subprocess
 import tempfile
-import threading
-import uuid
 from typing import Any, Dict, Optional, Tuple
 
 import cv2
@@ -485,6 +483,24 @@ def _round_or_nan(value: float) -> float:
     return round(float(value), 2) if np.isfinite(value) else float("nan")
 
 
+def _body_position(landmarks, width: int, height: int):
+    """
+    Where the body is in the frame: mid-hip x and y (0-1 of the frame) and the
+    shoulder-to-hip length as a fraction of the frame height. Used by the app
+    to spot camera cuts and moments when the tracker jumps to another person.
+    Returns (nan, nan, nan) when the trunk landmarks are not clearly visible.
+    """
+    nan = float("nan")
+    if any(_visibility(landmarks, i) < _VISIBILITY_THRESHOLD for i in (11, 12, 23, 24)):
+        return nan, nan, nan
+    hip_x = (landmarks[23].x + landmarks[24].x) / 2.0
+    hip_y = (landmarks[23].y + landmarks[24].y) / 2.0
+    shoulder_x = (landmarks[11].x + landmarks[12].x) / 2.0
+    shoulder_y = (landmarks[11].y + landmarks[12].y) / 2.0
+    torso = float(np.hypot((shoulder_x - hip_x) * width, (shoulder_y - hip_y) * height))
+    return float(hip_x), float(hip_y), torso / max(float(height), 1.0)
+
+
 # --------------------------------------------------------------------------
 # OpenCV writer helper
 # --------------------------------------------------------------------------
@@ -509,8 +525,8 @@ def _open_video_writer(directory: str, fps: float, size: Tuple[int, int]):
 # Step 2: pose analysis and overlay video
 # --------------------------------------------------------------------------
 def analyze_video_bytes(video_bytes: bytes, stride: int = 2, max_frames: int = 240,
-                        progress_callback=None, quick: bool = False,
-                        defer_overlay: bool = False) -> Dict[str, Any]:
+                        progress_callback=None, model_complexity: int = 1,
+                        render_overlay: bool = True) -> Dict[str, Any]:
     """Convenience wrapper: write bytes to a temp file, analyze, clean up."""
     if not video_bytes:
         raise VideoValidationError("There is no video data to analyze.")
@@ -520,22 +536,18 @@ def analyze_video_bytes(video_bytes: bytes, stride: int = 2, max_frames: int = 2
         with open(path, "wb") as handle:
             handle.write(video_bytes)
         return analyze_video(path, stride=stride, max_frames=max_frames,
-                             progress_callback=progress_callback, quick=quick,
-                             defer_overlay=defer_overlay)
+                             progress_callback=progress_callback,
+                             model_complexity=model_complexity,
+                             render_overlay=render_overlay)
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
 
 
 def analyze_video(video_path: str, stride: int = 2, max_frames: int = 240,
-                  progress_callback=None, quick: bool = False,
-                  defer_overlay: bool = False) -> Dict[str, Any]:
+                  progress_callback=None, model_complexity: int = 1,
+                  render_overlay: bool = True) -> Dict[str, Any]:
     """
     Analyze a cricket bowling video with MediaPipe Pose.
-
-    quick          use the lighter pose model (faster, slightly less precise)
-    defer_overlay  skip drawing and encoding the skeleton video during this pass.
-                   The 2D landmarks are returned in "pose_2d" so that
-                   render_overlay_video() can build the video afterwards.
 
     progress_callback(done, total, message=None) is called every few sampled
     frames and when encoding starts; errors inside it never stop the analysis.
@@ -587,7 +599,7 @@ def analyze_video(video_path: str, stride: int = 2, max_frames: int = 240,
         try:
             pose_model = mp.solutions.pose.Pose(
                 static_image_mode=False,
-                model_complexity=0 if quick else 1,
+                model_complexity=0 if int(model_complexity) <= 0 else 1,
                 smooth_landmarks=True,
                 enable_segmentation=False,
                 min_detection_confidence=0.5,
@@ -618,10 +630,11 @@ def analyze_video(video_path: str, stride: int = 2, max_frames: int = 240,
 
         rows = []
         pose_3d_frames = []
-        pose_2d_frames = []
         fallback_frames = []
         overlay_size: Optional[Tuple[int, int]] = None
-        writer_error: Optional[str] = None
+        writer_error: Optional[str] = (
+            None if render_overlay else "The skeleton video was skipped for the quick check."
+        )
         frames_written = 0
         frame_errors = 0
         frame_index = 0
@@ -645,14 +658,14 @@ def analyze_video(video_path: str, stride: int = 2, max_frames: int = 240,
             if width <= 0 or height <= 0:
                 width, height = frame_width, frame_height
 
-            overlay = None if defer_overlay else frame.copy()
+            overlay = frame.copy()
             detected = False
             visible_count = 0
             side = ""
             pose_3d_frame = None
             view_yaw = float("nan")
             arm_height = float("nan")
-            pose_2d_frame = None
+            hip_x = hip_y = torso_len = float("nan")
             angles_3d = {
                 "wrist_angle_3d_deg": float("nan"),
                 "elbow_angle_3d_deg": float("nan"),
@@ -673,24 +686,18 @@ def analyze_video(video_path: str, stride: int = 2, max_frames: int = 240,
                 result = pose_model.process(rgb_frame)
                 if result.pose_landmarks:
                     landmarks = result.pose_landmarks.landmark
-                    pose_2d_frame = np.array(
-                        [[lm.x, lm.y, float(getattr(lm, "visibility", 0.0) or 0.0)]
-                         for lm in landmarks],
-                        dtype=np.float32,
+                    line_thickness = max(2, int(round(frame_width / 400)))
+                    mp_draw.draw_landmarks(
+                        overlay,
+                        result.pose_landmarks,
+                        mp_pose.POSE_CONNECTIONS,
+                        landmark_drawing_spec=mp_draw.DrawingSpec(
+                            color=(70, 225, 255), thickness=line_thickness,
+                            circle_radius=line_thickness + 1),
+                        connection_drawing_spec=mp_draw.DrawingSpec(
+                            color=(255, 193, 76), thickness=line_thickness,
+                            circle_radius=line_thickness),
                     )
-                    if not defer_overlay:
-                        line_thickness = max(2, int(round(frame_width / 400)))
-                        mp_draw.draw_landmarks(
-                            overlay,
-                            result.pose_landmarks,
-                            mp_pose.POSE_CONNECTIONS,
-                            landmark_drawing_spec=mp_draw.DrawingSpec(
-                                color=(70, 225, 255), thickness=line_thickness,
-                                circle_radius=line_thickness + 1),
-                            connection_drawing_spec=mp_draw.DrawingSpec(
-                                color=(255, 193, 76), thickness=line_thickness,
-                                circle_radius=line_thickness),
-                        )
                     visible_count = sum(
                         1 for lm in landmarks
                         if float(getattr(lm, "visibility", 0.0) or 0.0) >= _VISIBILITY_THRESHOLD
@@ -698,6 +705,8 @@ def analyze_video(video_path: str, stride: int = 2, max_frames: int = 240,
                     side = _choose_side(landmarks)
                     angles = _compute_angles(landmarks, frame_width, frame_height, side)
                     arm_height = _arm_height(landmarks, frame_width, frame_height, side)
+                    hip_x, hip_y, torso_len = _body_position(
+                        landmarks, frame_width, frame_height)
                     detected = True
 
                     # Approximate 3D: MediaPipe world landmarks (metres, hip-centred)
@@ -726,51 +735,52 @@ def analyze_video(video_path: str, stride: int = 2, max_frames: int = 240,
                 if frame_errors == 1:
                     logger.warning("Pose processing failed on frame %d: %s", current_index, exc)
 
-            if not detected and not defer_overlay:
+            if not detected:
                 cv2.putText(
                     overlay, "POSE NOT DETECTED", (16, 35),
                     cv2.FONT_HERSHEY_SIMPLEX, max(0.6, frame_width / 1400.0),
                     (70, 225, 255), 2, cv2.LINE_AA,
                 )
 
-            if not defer_overlay:
-                # Fix the overlay size from the first processed frame (even numbers)
-                if overlay_size is None:
-                    target_w = min(MAX_OVERLAY_WIDTH, overlay.shape[1])
-                    target_h = max(2, int(round(overlay.shape[0] * target_w / overlay.shape[1])))
-                    target_w = max(2, target_w - (target_w % 2))
-                    target_h = max(2, target_h - (target_h % 2))
-                    overlay_size = (target_w, target_h)
-                if (overlay.shape[1], overlay.shape[0]) != overlay_size:
-                    overlay = cv2.resize(overlay, overlay_size, interpolation=cv2.INTER_AREA)
+            # Fix the overlay size from the first processed frame (even numbers)
+            if overlay_size is None:
+                target_w = min(MAX_OVERLAY_WIDTH, overlay.shape[1])
+                target_h = max(2, int(round(overlay.shape[0] * target_w / overlay.shape[1])))
+                target_w = max(2, target_w - (target_w % 2))
+                target_h = max(2, target_h - (target_h % 2))
+                overlay_size = (target_w, target_h)
+            if (overlay.shape[1], overlay.shape[0]) != overlay_size:
+                overlay = cv2.resize(overlay, overlay_size, interpolation=cv2.INTER_AREA)
 
-                # Open the OpenCV writer lazily; failure must never crash the app
-                if video_writer is None and writer_error is None:
-                    video_writer, raw_overlay_path = _open_video_writer(work_dir, output_fps, overlay_size)
-                    if video_writer is None:
-                        writer_error = "OpenCV could not open a video writer with any available codec."
-                        logger.warning(writer_error)
-                if video_writer is not None and writer_error is None:
-                    try:
-                        video_writer.write(overlay)
-                        frames_written += 1
-                    except Exception as exc:  # noqa: BLE001
-                        writer_error = f"Writing overlay frames failed: {exc}"
-                        logger.warning(writer_error)
-
-                # Small JPEG copy for the fallback slider (keeps memory low)
+            # Open the OpenCV writer lazily; failure must never crash the app
+            if video_writer is None and writer_error is None:
+                video_writer, raw_overlay_path = _open_video_writer(work_dir, output_fps, overlay_size)
+                if video_writer is None:
+                    writer_error = "OpenCV could not open a video writer with any available codec."
+                    logger.warning(writer_error)
+            if video_writer is not None and writer_error is None:
                 try:
+                    video_writer.write(overlay)
+                    frames_written += 1
+                except Exception as exc:  # noqa: BLE001
+                    writer_error = f"Writing overlay frames failed: {exc}"
+                    logger.warning(writer_error)
+
+            # Small JPEG copy for the fallback slider (keeps memory low)
+            try:
+                if render_overlay:
                     thumb = overlay
                     if thumb.shape[1] > MAX_FALLBACK_WIDTH:
                         scale = MAX_FALLBACK_WIDTH / thumb.shape[1]
                         thumb = cv2.resize(
                             thumb, (MAX_FALLBACK_WIDTH, max(1, int(thumb.shape[0] * scale))),
                             interpolation=cv2.INTER_AREA)
-                    encoded_ok, encoded = cv2.imencode(".jpg", thumb, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                    encoded_ok, encoded = cv2.imencode(
+                        ".jpg", thumb, [cv2.IMWRITE_JPEG_QUALITY, 80])
                     if encoded_ok:
                         fallback_frames.append(encoded.tobytes())
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("Could not store fallback frame: %s", exc)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Could not store fallback frame: %s", exc)
 
             rows.append({
                 "frame": current_index,
@@ -780,6 +790,9 @@ def analyze_video(video_path: str, stride: int = 2, max_frames: int = 240,
                 "visible_landmarks": int(visible_count),
                 "view_yaw_deg": _round_or_nan(view_yaw),
                 "wrist_above_shoulder": _round_or_nan(arm_height),
+                "hip_x": _round_or_nan(hip_x),
+                "hip_y": _round_or_nan(hip_y),
+                "torso_len": _round_or_nan(torso_len),
                 "wrist_angle_deg": _round_or_nan(angles["wrist_angle_deg"]),
                 "elbow_angle_deg": _round_or_nan(angles["elbow_angle_deg"]),
                 "shoulder_angle_deg": _round_or_nan(angles["shoulder_angle_deg"]),
@@ -792,7 +805,6 @@ def analyze_video(video_path: str, stride: int = 2, max_frames: int = 240,
                 "hip_angle_3d_deg": _round_or_nan(angles_3d["hip_angle_3d_deg"]),
             })
             pose_3d_frames.append(pose_3d_frame)
-            pose_2d_frames.append(pose_2d_frame)
             sampled_count += 1
             if sampled_count % 3 == 0:
                 notify(sampled_count)
@@ -819,10 +831,7 @@ def analyze_video(video_path: str, stride: int = 2, max_frames: int = 240,
         if not rows:
             raise VideoValidationError("No readable video frames were found in this clip.")
 
-        if defer_overlay:
-            notify(len(rows), "Finishing the report...")
-        else:
-            notify(len(rows), "Encoding the skeleton video...")
+        notify(len(rows), "Encoding the skeleton video...")
         data = pd.DataFrame(rows)
         pose_percentage = float(data["pose_detected"].mean() * 100) if len(data) else 0.0
         duration = total_frames / fps if total_frames > 0 else float(data["time_seconds"].iloc[-1])
@@ -831,9 +840,7 @@ def analyze_video(video_path: str, stride: int = 2, max_frames: int = 240,
         overlay_error: Optional[str] = writer_error
         overlay_info: Optional[Dict[str, Any]] = None
 
-        if defer_overlay:
-            overlay_error = None
-        elif writer_error is None and raw_overlay_path and frames_written > 0:
+        if writer_error is None and raw_overlay_path and frames_written > 0:
             if not os.path.isfile(raw_overlay_path) or os.path.getsize(raw_overlay_path) <= 0:
                 overlay_error = "OpenCV produced an empty overlay file."
             else:
@@ -866,10 +873,6 @@ def analyze_video(video_path: str, stride: int = 2, max_frames: int = 240,
             "overlay_frames": [] if overlay_video_bytes else fallback_frames,
             "overlay_error": overlay_error,
             "overlay_info": overlay_info,
-            "pose_2d": pose_2d_frames,
-            "frame_indices": [int(row["frame"]) for row in rows],
-            "overlay_pending": bool(defer_overlay),
-            "quick": bool(quick),
             "pose_3d": pose_3d_frames,
             "pose_3d_available": any(frame is not None for frame in pose_3d_frames),
             "pose_connections": [list(pair) for pair in POSE_CONNECTIONS_3D],
@@ -887,246 +890,6 @@ def analyze_video(video_path: str, stride: int = 2, max_frames: int = 240,
         }
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
-
-
-# --------------------------------------------------------------------------
-# Skeleton replay video, built afterwards from the saved 2D landmarks
-# --------------------------------------------------------------------------
-def _draw_skeleton_2d(image, landmarks) -> None:
-    """Draw the skeleton onto a BGR frame. landmarks is (33, 3): x, y, visibility."""
-    height, width = image.shape[:2]
-    if landmarks is None:
-        cv2.putText(image, "POSE NOT DETECTED", (16, 35), cv2.FONT_HERSHEY_SIMPLEX,
-                    max(0.6, width / 1400.0), (70, 225, 255), 2, cv2.LINE_AA)
-        return
-    thickness = max(2, int(round(width / 400)))
-    points = [(int(round(float(x) * width)), int(round(float(y) * height)))
-              for x, y, _ in landmarks]
-    visible = [float(v) >= _VISIBILITY_THRESHOLD for _, _, v in landmarks]
-    for a, b in POSE_CONNECTIONS_3D:
-        if visible[a] and visible[b]:
-            cv2.line(image, points[a], points[b], (255, 193, 76), thickness, cv2.LINE_AA)
-    for index, point in enumerate(points):
-        if visible[index]:
-            cv2.circle(image, point, thickness + 1, (70, 225, 255), -1, cv2.LINE_AA)
-
-
-def render_overlay_video(video_path: str, frame_indices, pose_2d, fps: float,
-                         stride: int) -> Dict[str, Any]:
-    """
-    Build the skeleton replay from saved landmarks, without running pose again.
-
-    Never raises for encoding problems: the result always has the keys
-    overlay_video_bytes, overlay_frames (JPEG fallback), overlay_error, overlay_info.
-    """
-    result: Dict[str, Any] = {
-        "overlay_video_bytes": None,
-        "overlay_frames": [],
-        "overlay_error": None,
-        "overlay_info": None,
-    }
-    indices = [int(i) for i in (frame_indices or [])]
-    if not indices or not pose_2d:
-        result["overlay_error"] = "There were no analysed frames to draw."
-        return result
-
-    wanted = {frame_number: order for order, frame_number in enumerate(indices)}
-    last_frame = max(wanted)
-    capture = cv2.VideoCapture(video_path)
-    if not capture.isOpened():
-        result["overlay_error"] = "Could not reopen the video to draw the skeleton."
-        return result
-
-    work_dir = tempfile.mkdtemp(prefix="cricket_overlay2_")
-    writer = None
-    raw_path = None
-    frames_written = 0
-    writer_error: Optional[str] = None
-    fallback_frames = []
-    size: Optional[Tuple[int, int]] = None
-    try:
-        output_fps = float(min(max(float(fps) / max(int(stride), 1), 1.0), 60.0))
-        position = 0
-        while position <= last_frame:
-            if position not in wanted:
-                if not capture.grab():
-                    break
-                position += 1
-                continue
-            ok, frame = capture.read()
-            if not ok or frame is None:
-                break
-            order = wanted[position]
-            position += 1
-
-            landmarks = pose_2d[order] if order < len(pose_2d) else None
-            _draw_skeleton_2d(frame, landmarks)
-
-            if size is None:
-                target_w = max(2, min(MAX_OVERLAY_WIDTH, frame.shape[1]))
-                target_h = max(2, int(round(frame.shape[0] * target_w / frame.shape[1])))
-                size = (target_w - target_w % 2, target_h - target_h % 2)
-            if (frame.shape[1], frame.shape[0]) != size:
-                frame = cv2.resize(frame, size, interpolation=cv2.INTER_AREA)
-
-            if writer is None and writer_error is None:
-                writer, raw_path = _open_video_writer(work_dir, output_fps, size)
-                if writer is None:
-                    writer_error = "OpenCV could not open a video writer with any available codec."
-            if writer is not None and writer_error is None:
-                try:
-                    writer.write(frame)
-                    frames_written += 1
-                except Exception as exc:  # noqa: BLE001
-                    writer_error = f"Writing skeleton frames failed: {exc}"
-
-            try:
-                thumb = frame
-                if thumb.shape[1] > MAX_FALLBACK_WIDTH:
-                    ratio = MAX_FALLBACK_WIDTH / thumb.shape[1]
-                    thumb = cv2.resize(thumb, (MAX_FALLBACK_WIDTH, max(1, int(thumb.shape[0] * ratio))),
-                                       interpolation=cv2.INTER_AREA)
-                encoded_ok, encoded = cv2.imencode(".jpg", thumb, [cv2.IMWRITE_JPEG_QUALITY, 80])
-                if encoded_ok:
-                    fallback_frames.append(encoded.tobytes())
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Could not keep a fallback frame: %s", exc)
-
-        if writer is not None:
-            writer.release()
-            writer = None
-
-        if frames_written == 0 or not raw_path or not os.path.isfile(raw_path) \
-                or os.path.getsize(raw_path) <= 0:
-            result["overlay_error"] = writer_error or "No skeleton frames were written."
-        else:
-            final_path = os.path.join(work_dir, "skeleton_h264.mp4")
-            try:
-                convert_to_browser_mp4(raw_path, final_path, timeout=OVERLAY_CONVERSION_TIMEOUT,
-                                       max_width=MAX_OVERLAY_WIDTH, include_audio=False)
-                result["overlay_info"] = probe_video(final_path)
-                with open(final_path, "rb") as handle:
-                    data = handle.read()
-                if data:
-                    result["overlay_video_bytes"] = data
-                else:
-                    result["overlay_error"] = "The converted skeleton video is empty."
-            except ProcessorError as exc:
-                result["overlay_error"] = str(exc)
-                logger.warning("Skeleton video conversion failed: %s", exc)
-            except Exception as exc:  # noqa: BLE001
-                result["overlay_error"] = f"Unexpected error while encoding the skeleton video: {exc}"
-                logger.exception("Unexpected skeleton encoding error")
-
-        result["overlay_frames"] = [] if result["overlay_video_bytes"] else fallback_frames
-        return result
-    finally:
-        capture.release()
-        if writer is not None:
-            writer.release()
-        shutil.rmtree(work_dir, ignore_errors=True)
-
-
-def render_overlay_video_bytes(video_bytes: bytes, frame_indices, pose_2d, fps: float,
-                               stride: int) -> Dict[str, Any]:
-    """Write the video bytes to a temp file and call render_overlay_video."""
-    work_dir = tempfile.mkdtemp(prefix="cricket_overlay_src_")
-    try:
-        path = os.path.join(work_dir, "input.mp4")
-        with open(path, "wb") as handle:
-            handle.write(video_bytes)
-        return render_overlay_video(path, frame_indices, pose_2d, fps, stride)
-    finally:
-        shutil.rmtree(work_dir, ignore_errors=True)
-
-
-# --------------------------------------------------------------------------
-# Background job: pose analysis first, skeleton video second
-# --------------------------------------------------------------------------
-class AnalysisJob:
-    """
-    Runs the analysis in a background thread so the page stays responsive.
-
-    Stage 1 (pose pass) produces the report data. Stage 2 builds the skeleton
-    video from the saved landmarks. The thread never touches Streamlit; the app
-    polls snapshot() instead.
-    """
-
-    def __init__(self, video_bytes: bytes, source_key: str, filename: str,
-                 stride: int, max_frames: int, quick: bool):
-        self.job_id = uuid.uuid4().hex
-        self.source_key = source_key
-        self.filename = filename
-        self.stride = int(stride)
-        self.max_frames = int(max_frames)
-        self.quick = bool(quick)
-        self._video_bytes = video_bytes
-        self._lock = threading.Lock()
-        self._thread: Optional[threading.Thread] = None
-        self._state: Dict[str, Any] = {
-            "stage": "queued",
-            "done": 0,
-            "total": 1,
-            "message": "Starting the analysis...",
-            "stage1": None,
-            "overlay": None,
-            "error": None,
-        }
-
-    def start(self) -> None:
-        self._thread = threading.Thread(target=self._run, name=f"analysis-{self.job_id[:8]}",
-                                        daemon=True)
-        self._thread.start()
-
-    def snapshot(self) -> Dict[str, Any]:
-        with self._lock:
-            return dict(self._state)
-
-    def _set(self, **changes: Any) -> None:
-        with self._lock:
-            self._state.update(changes)
-
-    def _on_progress(self, done: int, total: int, message: Optional[str] = None) -> None:
-        self._set(done=int(done), total=int(max(total, 1)),
-                  message=message or f"Analysed {int(done)} of {int(max(total, 1))} sampled frames")
-
-    def _run(self) -> None:
-        try:
-            self._set(stage="analyzing", message="Looking for the bowler in each frame...")
-            result = analyze_video_bytes(
-                self._video_bytes,
-                stride=self.stride,
-                max_frames=self.max_frames,
-                progress_callback=self._on_progress,
-                quick=self.quick,
-                defer_overlay=True,
-            )
-            if not isinstance(result, dict) or "data" not in result:
-                raise ProcessorError("The processor did not return frame-level data.")
-            self._set(stage="building_videos", stage1=result,
-                      message="Report ready. Building the skeleton video...")
-        except ProcessorError as exc:
-            self._set(stage="error", error=str(exc))
-            self._video_bytes = None
-            return
-        except Exception as exc:  # noqa: BLE001 - reported to the user
-            logger.exception("Analysis job failed")
-            self._set(stage="error", error=f"Unexpected error during the analysis: {exc}")
-            self._video_bytes = None
-            return
-
-        try:
-            overlay = render_overlay_video_bytes(
-                self._video_bytes, result.get("frame_indices") or [],
-                result.get("pose_2d") or [], result.get("fps") or 25.0, result.get("stride") or 1,
-            )
-        except Exception as exc:  # noqa: BLE001 - the report is still valid
-            logger.exception("Skeleton video stage failed")
-            overlay = {"overlay_video_bytes": None, "overlay_frames": [],
-                       "overlay_error": f"Unexpected error while building the skeleton video: {exc}",
-                       "overlay_info": None}
-        self._video_bytes = None
-        self._set(stage="done", overlay=overlay, message="All done")
 
 
 # --------------------------------------------------------------------------
