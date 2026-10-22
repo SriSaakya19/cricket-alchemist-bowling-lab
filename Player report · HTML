@@ -1,27 +1,458 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>My bowling report</title><style>
-*{box-sizing:border-box}
-body{margin:0;background:#071322;color:#F5F8FF;font-family:Arial,Helvetica,sans-serif;line-height:1.5}
-.page{max-width:760px;margin:0 auto;padding:22px 18px 36px}
-.brand{color:#FFD16D;letter-spacing:.18em;font-size:.78rem;font-weight:800}
-h1{font-size:2rem;margin:.3rem 0 0;color:#fff}
-.who{font-size:1.2rem;color:#FFD16D;font-weight:700;margin-top:.2rem}
-.date{color:#9fb3c8;font-size:.9rem;margin-bottom:1rem}
-.hero{background:#10243A;border:1px solid #294968;border-radius:16px;padding:16px 18px;margin:12px 0}
-.hero p{font-size:1.3rem;font-weight:700;margin:.2rem 0 .6rem;color:#fff}
-.badge{display:inline-block;border-radius:12px;padding:6px 12px;font-size:.88rem;font-weight:700;color:#fff}
-.tiles{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:12px 0}
-.tile{background:#0C1B2D;border:1px solid #2A4B6B;border-radius:14px;padding:12px}
-.tl{font-size:.68rem;letter-spacing:.08em;color:#C2D0E2;font-weight:700}
-.tv{font-size:2rem;font-weight:800;color:#FFD16D;margin:.2rem 0}
-.tn{font-size:.78rem;color:#9fb3c8}
-h2{font-size:1.05rem;color:#FFD16D;margin:1.4rem 0 .3rem;letter-spacing:.04em}
-ul{margin:.3rem 0 .3rem 1.1rem;padding:0} li{margin:.25rem 0}
-.photos{display:flex;flex-wrap:wrap;gap:12px;justify-content:center}
-.photo{text-align:center;flex:1 1 220px}.photo img{max-width:100%;max-height:380px;border-radius:12px;border:1px solid #294968}
-.cap{font-size:.8rem;color:#9fb3c8;margin-top:4px}
-.note{font-size:.82rem;color:#9fb3c8;border-top:1px solid #294968;margin-top:1.6rem;padding-top:.8rem}
-@media (max-width:560px){.tiles{grid-template-columns:1fr}}
-@media print{body{background:#fff;color:#14202e} h1,.hero p{color:#14202e} .hero,.tile{background:#fff;border-color:#bbb}
-.tv,h2,.who,.brand{color:#8a5a00} .tl,.tn,.cap,.note,.date{color:#444} .tile,.hero,.photo,svg{break-inside:avoid}
-svg text{fill:#333!important} svg .ttl{fill:#000!important} .ln{stroke:#1f6fb2!important} .ax{stroke:#ccc!important}}
-.ax{stroke:#1E3550;stroke-width:1}.ln{stroke:#4CC1FF;fill:none;stroke-width:2.5}.rel{stroke:#FFD16D;stroke-width:1.5;stroke-dasharray:4 3}.relt{fill:#FFD16D}.bad{fill:rgba(255,127,150,.18)}svg{width:100%;height:auto;display:block;margin:6px 0}svg text{fill:#C2D0E2;font:11px Arial,sans-serif}svg .ttl{fill:#fff;font:bold 13px Arial,sans-serif}</style></head><body><div class="page"><div class="brand">THE CRICKET ALCHEMIST · BOWLING LAB</div><h1>My bowling report</h1><div class="who">Sri</div><div class="date">22 Oct 2026</div><div class="hero"><p>Usable clip, treat the numbers as rough</p><span class="badge" style="background:#d99a1c">The app followed your body reliably in 88% of the frames it checked, and saw the picture jump 1 time(s) (a camera cut or another person); those moments are left out.</span></div><div class="tiles"><div class="tile"><div class="tl">BALL LEAVES YOUR HAND</div><div class="tv">2.0 s</div><div class="tn">this far into the clip (automatic guess)</div></div><div class="tile"><div class="tl">LEG AT RELEASE</div><div class="tv">163°</div><div class="tn">your left leg</div></div><div class="tile"><div class="tl">ELBOW AT RELEASE</div><div class="tv">158°</div><div class="tn">your left arm</div></div></div><div class="photos"><div class="photo"><img alt="Your body at the likely release" src="data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA="><div class="cap">Your body at the likely release</div></div></div><h2>HOW YOUR LEG AND ELBOW MOVED</h2><svg viewBox="0 0 640 180" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="YOUR LEG ANGLE OVER TIME (degrees)"><rect class="bad" x="378.3" y="26" width="59.2" height="128"/><line class="ax" x1="44" x2="628" y1="154.0" y2="154.0"/><text x="38" y="158.0" text-anchor="end">0°</text><line class="ax" x1="44" x2="628" y1="113.6" y2="113.6"/><text x="38" y="117.6" text-anchor="end">60°</text><line class="ax" x1="44" x2="628" y1="73.2" y2="73.2"/><text x="38" y="77.2" text-anchor="end">120°</text><line class="ax" x1="44" x2="628" y1="32.7" y2="32.7"/><text x="38" y="36.7" text-anchor="end">180°</text><path class="ln" d="M44.0 52.9 L52.5 51.5 L60.9 50.1 L69.4 48.6 L77.9 47.2 L86.3 45.9 L94.8 44.6 L103.3 43.3 L111.7 42.2 L120.2 41.1 L128.7 40.1 L137.1 39.2 L145.6 38.4 L154.1 37.7 L162.5 37.2 L171.0 36.7 L179.5 36.4 L187.8 36.2 L196.3 36.1 L204.9 36.2 L213.2 36.3 L221.7 36.6 L230.2 37.0 L238.6 37.6 L247.1 38.3 L255.6 39.0 L264.0 39.9 L272.5 40.8 L281.0 41.9 L289.4 43.0 L297.9 44.3 L306.4 45.5 L314.8 46.9 L323.3 48.3 L331.8 49.7 L340.2 51.1 L348.7 52.6 L357.2 54.0 L365.6 55.5 L374.1 56.9 M441.8 66.5 L450.3 67.3 L458.8 68.0 L467.1 68.6 L475.7 69.0 L484.2 69.5 L492.5 69.7 L501.0 69.8 L509.5 69.8 L517.9 69.7 L526.4 69.4 L534.9 69.0 L543.3 68.4 L551.8 67.8 L560.3 67.1 L568.7 66.2 L577.2 65.3 L585.7 64.3 L594.1 63.1 L602.6 61.9 L611.1 60.7 L619.5 59.3 L628.0 58.0"/><line class="rel" x1="297.9" x2="297.9" y1="22" y2="154"/><text class="relt" x="301.9" y="34">release</text><text class="ttl" x="44" y="15">YOUR LEG ANGLE OVER TIME (degrees)</text><text x="44" y="172">0.0 s</text><text x="628" y="172" text-anchor="end">4.6 s</text></svg><svg viewBox="0 0 640 180" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="YOUR ELBOW ANGLE OVER TIME (degrees)"><rect class="bad" x="378.3" y="26" width="59.2" height="128"/><line class="ax" x1="44" x2="628" y1="154.0" y2="154.0"/><text x="38" y="158.0" text-anchor="end">0°</text><line class="ax" x1="44" x2="628" y1="113.6" y2="113.6"/><text x="38" y="117.6" text-anchor="end">60°</text><line class="ax" x1="44" x2="628" y1="73.2" y2="73.2"/><text x="38" y="77.2" text-anchor="end">120°</text><line class="ax" x1="44" x2="628" y1="32.7" y2="32.7"/><text x="38" y="36.7" text-anchor="end">180°</text><path class="ln" d="M44.0 86.6 L52.5 84.2 L60.9 81.8 L69.4 79.4 L77.9 77.0 L86.3 74.7 L94.8 72.4 L103.3 70.1 L111.7 68.0 L120.2 65.9 L128.7 63.8 L137.1 61.8 L145.6 60.0 L154.1 58.2 L162.5 56.5 L171.0 55.0 L179.5 53.5 L187.8 52.2 L196.3 51.0 L204.9 49.9 L213.2 49.0 L221.7 48.2 L230.2 47.5 L238.6 47.0 L247.1 46.5 L255.6 46.3 L264.0 46.2 L272.5 46.3 L281.0 46.5 L289.4 46.8 L297.9 47.3 L306.4 47.9 L314.8 48.6 L323.3 49.6 L331.8 50.6 L340.2 51.7 L348.7 53.0 L357.2 54.4 L365.6 56.0 L374.1 57.6 M441.8 73.8 L450.3 76.2 L458.8 78.5 L467.1 80.9 L475.7 83.3 L484.2 85.8 L492.5 88.2 L501.0 90.6 L509.5 93.0 L517.9 95.4 L526.4 97.7 L534.9 100.0 L543.3 102.3 L551.8 104.6 L560.3 106.6 L568.7 108.7 L577.2 110.7 L585.7 112.6 L594.1 114.5 L602.6 116.1 L611.1 117.8 L619.5 119.2 L628.0 120.6"/><line class="rel" x1="297.9" x2="297.9" y1="22" y2="154"/><text class="relt" x="301.9" y="34">release</text><text class="ttl" x="44" y="15">YOUR ELBOW ANGLE OVER TIME (degrees)</text><text x="44" y="172">0.0 s</text><text x="628" y="172" text-anchor="end">4.6 s</text></svg><div class="cap">Pink shading marks moments the app could not follow you reliably.</div><h2>YOUR LEFT LEG</h2><ul><li>Deepest bend: 125° at 3.6 s.</li><li>Straightest: 175° at 1.2 s.</li><li>At release: 163°.</li></ul><h2>YOUR LEFT ELBOW</h2><ul><li>Most bent: 50° at 4.6 s.</li><li>Straightest: 160° at 1.7 s.</li><li>At release: 158°.</li><li>Total movement across the clip: 110°.</li></ul><h2>YOUR CAMERA</h2><ul><li>The camera looked mostly side-on (about 78°, where 0° is front-on and 90° is side-on). That is the best angle for knee and elbow readings.</li></ul><h2>FOR A BETTER READING NEXT TIME</h2><ul><li>Film one continuous shot. The picture jumped or cut in this clip.</li><li>Film every delivery from the same spot so you can compare your numbers from one session to the next.</li></ul><div class="note">This report is a guide made from one phone video. It does not judge whether your action is good or legal, and it does not assess injury risk. Angles: 180° is completely straight, smaller means more bent. Ask your coach to look at the video with you.</div></div></body></html>
+"""
+player_report.py - The Cricket Alchemist Bowling Lab
+
+Builds the plain-language player report from the player's OWN measurements
+(the 3D landmark data of the analysed clip), and a printable HTML version with
+the player's name on it.
+
+Nothing here is a fixed script: every finding is computed from the clip, carries
+the player's own numbers, and is left out when the clip does not support it.
+There are no legality or injury verdicts.
+
+This module does not import Streamlit, so it can be tested on its own.
+"""
+
+from __future__ import annotations
+
+import html
+import logging
+import re
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+import numpy as np
+import pandas as pd
+
+logger = logging.getLogger(__name__)
+
+MIN_VALID_FRAMES = 8
+
+# MediaPipe Pose landmark ids per body side
+_SIDE = {
+    "right": {"shoulder": 12, "elbow": 14, "wrist": 16, "hip": 24, "knee": 26, "ankle": 28},
+    "left": {"shoulder": 11, "elbow": 13, "wrist": 15, "hip": 23, "knee": 25, "ankle": 27},
+}
+
+STATUS_ICON = {"steady": "✅", "look": "👀", "info": "🔹", "unknown": "❔"}
+STATUS_LABEL = {
+    "steady": "Looks steady",
+    "look": "Worth a look",
+    "info": "Good to know",
+    "unknown": "Could not tell",
+}
+
+DISCLAIMER = (
+    "A quick review aid from one camera, using estimated body positions. It does not "
+    "judge whether an action is legal or whether you are at risk of injury. "
+    "Please ask a qualified coach."
+)
+
+
+# --------------------------------------------------------------------------
+# small maths helpers
+# --------------------------------------------------------------------------
+def _angle_at(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> float:
+    """Angle ABC at B in degrees (works for 2D or 3D points)."""
+    v1, v2 = a - b, c - b
+    denominator = float(np.linalg.norm(v1) * np.linalg.norm(v2))
+    if not np.isfinite(denominator) or denominator < 1e-8:
+        return float("nan")
+    cosine = float(np.clip(np.dot(v1, v2) / denominator, -1.0, 1.0))
+    return float(np.degrees(np.arccos(cosine)))
+
+
+def _tilt_from_vertical(vector: np.ndarray) -> float:
+    """
+    Angle between a body vector and straight up, in degrees.
+    World landmarks have y pointing DOWN, so 'up' is minus y.
+    """
+    length = float(np.linalg.norm(vector))
+    if not np.isfinite(length) or length < 1e-8:
+        return float("nan")
+    return float(np.degrees(np.arccos(np.clip(-vector[1] / length, -1.0, 1.0))))
+
+
+def _pose_array(pose_3d: List[Any], rows: int) -> np.ndarray:
+    poses = np.full((rows, 33, 3), np.nan)
+    for index, frame in enumerate((pose_3d or [])[:rows]):
+        if frame is not None and len(frame) >= 33:
+            try:
+                poses[index] = np.asarray(frame, dtype=float)[:33, :3]
+            except (TypeError, ValueError):
+                continue
+    return poses
+
+
+def _smooth(poses: np.ndarray, valid: np.ndarray) -> np.ndarray:
+    """3-frame running median per landmark; frames without a pose stay empty."""
+    rows = poses.shape[0]
+    flat = pd.DataFrame(poses.reshape(rows, -1))
+    smoothed = np.array(flat.rolling(3, center=True, min_periods=1).median().to_numpy(),
+                        dtype=float).reshape(rows, 33, 3)
+    smoothed[~valid] = np.nan
+    return smoothed
+
+
+def _median_over(values: List[float]) -> float:
+    values = [v for v in values if np.isfinite(v)]
+    return float(np.median(values)) if values else float("nan")
+
+
+# --------------------------------------------------------------------------
+# the report
+# --------------------------------------------------------------------------
+def build_player_report(df: pd.DataFrame, pose_3d: List[Any], detection_pct: float,
+                        view_info: Optional[Dict[str, Any]],
+                        analysis: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Returns a dict with:
+      level / dot / label   how clearly the bowler could be seen
+      tracked_text          one sentence with the tracked percentage
+      findings              list of {status, title, text}, from this clip's data
+      moments               list of {label, time, frame} to look at on the video
+      check                 data-based reasons to be careful with the numbers
+      disclaimer
+    """
+    analysis = analysis or {}
+    rows = len(df)
+    detected = df[df["pose_detected"]] if rows else df
+    median_visible = float(detected["visible_landmarks"].median()) if len(detected) else 0.0
+    detection_pct = float(detection_pct) if np.isfinite(detection_pct) else 0.0
+
+    if detection_pct >= 70 and median_visible >= 24:
+        level, dot, label = "good", "🟢", "Clear view"
+    elif detection_pct >= 40:
+        level, dot, label = "okay", "🟡", "Partly clear"
+    else:
+        level, dot, label = "low", "🔴", "Hard to see"
+
+    view_key = view_info.get("key") if view_info else None
+
+    report: Dict[str, Any] = {
+        "level": level,
+        "dot": dot,
+        "label": label,
+        "tracked_text": (
+            f"We could track your body in {detection_pct:.0f}% of the clip "
+            f"({int(median_visible)} of 33 body points clearly visible on a typical frame)."
+        ),
+        "findings": [],
+        "moments": [],
+        "check": [],
+        "disclaimer": DISCLAIMER,
+    }
+    check: List[str] = report["check"]
+
+    if level == "low":
+        check.append(
+            f"We could only track you in {detection_pct:.0f}% of the clip, so we have "
+            "not described your action. Film again in good light, with a steady camera "
+            "and your whole body in view."
+        )
+        return report
+
+    if level == "okay":
+        check.append(
+            f"We lost you in about {100 - detection_pct:.0f}% of the clip, so some "
+            "numbers may be missing or less reliable."
+        )
+
+    try:
+        _add_movement_findings(report, df, pose_3d, view_key, view_info)
+    except Exception:  # noqa: BLE001 - the report must never break the page
+        logger.exception("Could not work out the movement details")
+        check.append("We could not work out the movement details from this clip.")
+
+    if view_info:
+        view_text = {
+            "front": "mostly from the front or from behind",
+            "semi": "from a diagonal angle",
+            "side": "mostly from the side",
+        }.get(view_key, "")
+        if view_text:
+            suffix = {
+                "front": " Knee and elbow bend are hard to read from here, so those "
+                         "findings are marked as rough. Film from the side to see them better.",
+                "semi": " A diagonal view is a mix of both, so treat the numbers as rough.",
+                "side": " Shoulder and hip alignment is harder to read from the side. "
+                        "Film from the front or behind to check it.",
+            }[view_key]
+            check.append(f"The camera saw you {view_text}." + suffix)
+
+    if analysis.get("truncated"):
+        check.append(
+            f"Only the first {analysis.get('sampled_frames', rows)} sampled frames were "
+            "analysed, not the whole clip."
+        )
+
+    check.append(
+        "Labels such as 'worth a look' are simple rules of thumb applied to your own "
+        "numbers. They are not a coaching standard."
+    )
+    return report
+
+
+def _add_movement_findings(report: Dict[str, Any], df: pd.DataFrame, pose_3d: List[Any],
+                           view_key: Optional[str], view_info: Optional[Dict[str, Any]]) -> None:
+    check: List[str] = report["check"]
+    findings: List[Dict[str, str]] = report["findings"]
+    moments: List[Dict[str, Any]] = report["moments"]
+
+    def add(status: str, title: str, text: str) -> None:
+        findings.append({"status": status, "title": title, "text": text})
+
+    rows = len(df)
+    poses = _pose_array(pose_3d, rows)
+    valid = ~np.isnan(poses[:, 0, 0])
+    if int(valid.sum()) < MIN_VALID_FRAMES:
+        check.append("Too few frames had usable 3D body points to describe your movement.")
+        return
+
+    smooth = _smooth(poses, valid)
+    height = -smooth[:, :, 1]                      # metres above the hip, hip-centred
+    times = df["time_seconds"].to_numpy(dtype=float)
+    frames = df["frame"].to_numpy(dtype=float)
+    step = float(np.nanmedian(np.diff(times))) if rows > 1 else 0.1
+    if not np.isfinite(step) or step <= 0:
+        step = 0.1
+
+    # ---- which arm do you bowl with? the hand that rises highest above its shoulder
+    rise = {}
+    for side, ids in _SIDE.items():
+        gap = (height[:, ids["wrist"]] - height[:, ids["shoulder"]])[valid]
+        rise[side] = float(np.nanpercentile(gap, 95)) if np.isfinite(gap).any() else float("nan")
+    arm_side = max(rise, key=lambda s: rise[s] if np.isfinite(rise[s]) else -9.0)
+    other_side = "left" if arm_side == "right" else "right"
+
+    if not np.isfinite(rise[arm_side]) or rise[arm_side] < 0.10:
+        check.append(
+            "We did not see a hand rise above its shoulder, so we could not find your "
+            "release. Make sure the whole delivery is in the clip."
+        )
+        return
+    if np.isfinite(rise[other_side]) and rise[arm_side] - rise[other_side] < 0.12:
+        check.append(
+            "Both hands rose to a similar height, so we could not tell which arm you bowl "
+            "with. We left the arm and front-leg details out."
+        )
+        return
+
+    arm, leg = _SIDE[arm_side], _SIDE[other_side]
+    add("info", "Bowling arm",
+        f"Your {arm_side} hand went highest, up to about {rise[arm_side] * 100:.0f} cm above "
+        f"your shoulder, so we treated your {arm_side} arm as your bowling arm and your "
+        f"{other_side} leg as your front leg.")
+
+    # ---- release: the moment the bowling hand is highest
+    wrist_height = np.where(valid, height[:, arm["wrist"]], np.nan)
+    release = int(np.nanargmax(wrist_height))
+    # the smoothing flattens the peak by up to a frame, so settle on the raw peak next to it
+    raw_height = -poses[:, arm["wrist"], 1]
+    nearby = [i for i in (release - 1, release, release + 1) if 0 <= i < rows and valid[i]]
+    release = max(nearby, key=lambda i: raw_height[i])
+    moments.append({"label": "Your release (arm at its highest)",
+                    "time": float(times[release]), "frame": int(frames[release])})
+
+    def around(index: int) -> List[int]:
+        return [i for i in (index - 1, index, index + 1) if 0 <= i < rows and valid[i]]
+
+    def bend_at(index: int, joints) -> float:
+        values = []
+        for i in around(index):
+            a, b, c = (smooth[i, joints[0]], smooth[i, joints[1]], smooth[i, joints[2]])
+            values.append(180.0 - _angle_at(a, b, c))
+        return _median_over(values)
+
+    def tilt_at(index: int, vector_of) -> float:
+        return _median_over([_tilt_from_vertical(vector_of(i)) for i in around(index)])
+
+    # ---- front foot landing: start of the last stretch with the front foot low
+    ankle_height = np.where(valid, height[:, leg["ankle"]], np.nan)
+    window = max(3, int(round(1.2 / step)))
+    first = max(0, release - window)
+    segment = ankle_height[first:release + 1]
+    landing: Optional[int] = None
+    if int(np.isfinite(segment).sum()) >= 3:
+        low_level = float(np.nanmin(segment)) + 0.05
+        run_start, misses, i = None, 0, release
+        while i >= first:
+            if np.isfinite(ankle_height[i]) and ankle_height[i] <= low_level:
+                run_start, misses = i, 0
+            elif not np.isfinite(ankle_height[i]) and misses < 1:
+                misses += 1
+            else:
+                break
+            i -= 1
+        candidate = run_start if run_start is not None else first + int(np.nanargmin(segment))
+        # a real landing sits strictly between the window start and the release
+        if first < candidate < release:
+            landing = int(candidate)
+    if landing is not None:
+        moments.append({"label": "Your front foot lands",
+                        "time": float(times[landing]), "frame": int(frames[landing])})
+        moments.sort(key=lambda item: item["time"])
+
+    rough = view_key == "front"
+    rough_note = " The camera saw you from the front, so treat this as rough." if rough else ""
+
+    # ---- front leg
+    leg_joints = (leg["hip"], leg["knee"], leg["ankle"])
+    bend_release = bend_at(release, leg_joints)
+    bend_landing = bend_at(landing, leg_joints) if landing is not None else float("nan")
+    leg_name = f"{other_side} knee"
+
+    if np.isfinite(bend_release):
+        if np.isfinite(bend_landing):
+            change = bend_release - bend_landing
+            if bend_release <= 20:
+                status, title = "steady", "Front leg: firm"
+                text = (f"Your {leg_name} was bent about {bend_landing:.0f}° when your foot "
+                        f"landed and about {bend_release:.0f}° at release. That is close to "
+                        "straight, so your front leg is holding your weight firmly.")
+            elif change >= 12:
+                status, title = "look", "Front leg: may be giving way"
+                text = (f"Your {leg_name} was bent about {bend_landing:.0f}° when your foot "
+                        f"landed but about {bend_release:.0f}° at release, which is "
+                        f"{change:.0f}° more. Watch this part of the video.")
+            elif change <= -8:
+                status, title = "steady", "Front leg: straightening"
+                text = (f"Your {leg_name} went from about {bend_landing:.0f}° of bend at "
+                        f"landing to about {bend_release:.0f}° at release, so it is "
+                        "straightening as you bowl.")
+            else:
+                status, title = "info", "Front leg: holding its bend"
+                text = (f"Your {leg_name} stayed at a similar bend: about "
+                        f"{bend_landing:.0f}° at landing and {bend_release:.0f}° at release.")
+        else:
+            if bend_release <= 20:
+                status, title = "steady", "Front leg: close to straight at release"
+                text = f"Your {leg_name} was bent only about {bend_release:.0f}° at release."
+            else:
+                status, title = "info", "Front leg at release"
+                text = f"Your {leg_name} was bent about {bend_release:.0f}° at release."
+            text += " We could not pin down the moment your foot landed."
+        if rough:
+            status = "info" if status in ("steady", "look") else status
+            title += " (rough)"
+            text += rough_note
+        text += " (0° would be completely straight.)"
+        add(status, title, text)
+    else:
+        add("unknown", "Front leg", "We could not measure your front knee clearly in this clip.")
+
+    # ---- bowling arm at release
+    tilt_arm = tilt_at(release, lambda i: smooth[i, arm["wrist"]] - smooth[i, arm["shoulder"]])
+    bend_elbow = bend_at(release, (arm["shoulder"], arm["elbow"], arm["wrist"]))
+    if np.isfinite(tilt_arm):
+        if tilt_arm <= 25:
+            status, title = "steady", "Bowling arm: close to upright at release"
+            text = (f"At release your arm was only about {tilt_arm:.0f}° away from pointing "
+                    "straight up.")
+        elif tilt_arm <= 50:
+            status, title = "info", "Bowling arm: a little angled at release"
+            text = (f"At release your arm was about {tilt_arm:.0f}° away from pointing "
+                    "straight up.")
+        else:
+            status, title = "look", "Bowling arm: well away from upright at release"
+            text = (f"At release your arm was about {tilt_arm:.0f}° away from pointing "
+                    "straight up. Camera angle can exaggerate this, so check it on the video.")
+        if np.isfinite(bend_elbow):
+            text += f" Your elbow was bent about {bend_elbow:.0f}° at that moment."
+        text += " (Camera estimate only.)"
+        if rough:
+            status = "info" if status in ("steady", "look") else status
+            title += " (rough)"
+            text += rough_note
+        add(status, title, text)
+    else:
+        add("unknown", "Bowling arm at release",
+            "We could not measure your bowling arm clearly at release.")
+
+    # ---- upper body lean at release
+    def trunk_vector(i: int) -> np.ndarray:
+        shoulders = (smooth[i, _SIDE["left"]["shoulder"]] + smooth[i, _SIDE["right"]["shoulder"]]) / 2
+        hips = (smooth[i, _SIDE["left"]["hip"]] + smooth[i, _SIDE["right"]["hip"]]) / 2
+        return shoulders - hips
+
+    lean = tilt_at(release, trunk_vector)
+    if np.isfinite(lean):
+        if lean <= 15:
+            status, title = "steady", "Upper body: fairly upright"
+        elif lean <= 40:
+            status, title = "info", "Upper body: leaning"
+        else:
+            status, title = "look", "Upper body: leaning a lot"
+        add(status, title,
+            f"At release your upper body was tilted about {lean:.0f}° away from upright.")
+
+
+# --------------------------------------------------------------------------
+# name and printable report
+# --------------------------------------------------------------------------
+def safe_file_stem(name: str, fallback: str = "bowler") -> str:
+    stem = re.sub(r"[^A-Za-z0-9_-]+", "_", (name or "").strip()).strip("_")
+    return stem[:40] or fallback
+
+
+def build_player_report_html(name: str, report: Dict[str, Any], clip_name: str = "",
+                             generated_at: Optional[datetime] = None) -> str:
+    """One self-contained, print-friendly HTML page with the player's name on it."""
+    when = (generated_at or datetime.now()).strftime("%d %b %Y")
+    title_name = html.escape((name or "").strip()) or "Your bowling"
+    heading = (f"Bowling report for {title_name}" if (name or "").strip()
+               else "Your bowling report")
+
+    colours = {"steady": "#1B7F4B", "look": "#B26A00", "info": "#1F5FA8", "unknown": "#666666"}
+
+    finding_rows = "".join(
+        f'<div class="item" style="border-left-color:{colours.get(item["status"], "#666")}">'
+        f'<div class="tag" style="color:{colours.get(item["status"], "#666")}">'
+        f'{STATUS_ICON.get(item["status"], "")} {html.escape(STATUS_LABEL.get(item["status"], ""))}</div>'
+        f'<div class="ititle">{html.escape(item["title"])}</div>'
+        f'<div>{html.escape(item["text"])}</div></div>'
+        for item in report.get("findings", [])
+    ) or '<p class="muted">We could not describe your movement from this clip.</p>'
+
+    moment_rows = "".join(
+        f'<li><b>{item["time"]:.1f} s</b>: {html.escape(item["label"])}</li>'
+        for item in report.get("moments", [])
+    )
+    moment_block = (
+        f"<h2>Watch these moments on your video</h2><ul>{moment_rows}</ul>" if moment_rows else ""
+    )
+    check_rows = "".join(f"<li>{html.escape(text)}</li>" for text in report.get("check", []))
+    clip_line = f" · Clip: {html.escape(clip_name)}" if clip_name else ""
+
+    return f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{heading} | The Cricket Alchemist</title>
+<style>
+body {{ font-family: Arial, Helvetica, sans-serif; color:#14233A; max-width: 760px;
+       margin: 24px auto; padding: 0 18px; line-height: 1.5; }}
+.brand {{ letter-spacing: .14em; font-size: 12px; font-weight: 700; color:#B8860B; }}
+h1 {{ margin: 6px 0 2px; font-size: 28px; }}
+h2 {{ margin: 24px 0 8px; font-size: 18px; border-bottom: 2px solid #E8B54F; padding-bottom: 4px; }}
+.muted {{ color:#5B6B80; font-size: 13px; }}
+.clarity {{ background:#F4F7FB; border:1px solid #D5DEEA; border-radius:10px; padding:12px 14px; margin:14px 0; }}
+.item {{ border-left: 5px solid #666; background:#FAFBFD; padding:10px 14px; margin:10px 0; border-radius:6px; }}
+.tag {{ font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }}
+.ititle {{ font-size: 16px; font-weight: 700; margin: 2px 0 4px; }}
+.small {{ font-size: 12px; color:#5B6B80; margin-top: 22px; border-top:1px solid #D5DEEA; padding-top:10px; }}
+button {{ margin-top: 18px; padding: 10px 16px; font-weight: 700; background:#E8B54F; border:none; border-radius:8px; cursor:pointer; }}
+@media print {{ button {{ display:none; }} body {{ margin: 0; }} }}
+</style></head><body>
+<div class="brand">THE CRICKET ALCHEMIST · BOWLING LAB</div>
+<h1>{heading}</h1>
+<div class="muted">{when}{clip_line}</div>
+<div class="clarity"><b>{report.get("dot", "")} {html.escape(report.get("label", ""))}.</b>
+{html.escape(report.get("tracked_text", ""))}</div>
+<h2>Your delivery in simple words</h2>
+{finding_rows}
+{moment_block}
+<h2>Good to keep in mind</h2>
+<ul>{check_rows}</ul>
+<p class="small">{html.escape(report.get("disclaimer", DISCLAIMER))}</p>
+<button onclick="window.print()">Print or save as PDF</button>
+</body></html>
+"""
