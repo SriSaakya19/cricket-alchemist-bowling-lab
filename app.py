@@ -239,6 +239,36 @@ border-radius: 16px;
 padding: 1rem;
 }
 
+/* The drop area and its Upload button: dark box, light text, gold button with dark text
+   (otherwise the area stays light grey and the white button text cannot be read). */
+[data-testid="stFileUploaderDropzone"] {
+background: #0C1B2D !important;
+border: 1px dashed #6893BB !important;
+border-radius: 12px !important;
+}
+[data-testid="stFileUploaderDropzone"],
+[data-testid="stFileUploaderDropzone"] *,
+[data-testid="stFileUploaderDropzoneInstructions"],
+[data-testid="stFileUploaderDropzoneInstructions"] * {
+color: #E0EAF7 !important;
+-webkit-text-fill-color: #E0EAF7 !important;
+opacity: 1 !important;
+}
+[data-testid="stFileUploaderDropzone"] button {
+background: linear-gradient(90deg, #FFDF98, #E8B54F) !important;
+border: none !important;
+border-radius: 10px !important;
+}
+[data-testid="stFileUploaderDropzone"] button,
+[data-testid="stFileUploaderDropzone"] button * {
+color: #101827 !important;
+-webkit-text-fill-color: #101827 !important;
+font-weight: 900 !important;
+}
+[data-testid="stFileUploaderDropzone"] button svg {
+fill: #101827 !important;
+}
+
 .stSelectbox label,
 .stSlider label {
 color: #E7F0FC !important;
