@@ -244,6 +244,34 @@ padding: 1rem;
 color: #E7F0FC !important;
 }
 
+/* WIDGET LABELS (for example "Camera for the 3D video"): bright white and large */
+div[data-testid="stWidgetLabel"],
+div[data-testid="stWidgetLabel"] p,
+div[data-testid="stWidgetLabel"] label,
+div[data-testid="stWidgetLabel"] span {
+color: #FFFFFF !important;
+-webkit-text-fill-color: #FFFFFF !important;
+opacity: 1 !important;
+font-size: 1.2rem !important;
+font-weight: 800 !important;
+letter-spacing: .02em !important;
+}
+
+/* Choices inside radio buttons, toggles and checkboxes */
+div[data-testid="stRadio"] [role="radiogroup"] label,
+div[data-testid="stRadio"] [role="radiogroup"] label p,
+div[data-testid="stRadio"] [role="radiogroup"] label div,
+div[data-testid="stCheckbox"] label,
+div[data-testid="stCheckbox"] label p,
+div[data-testid="stToggle"] label,
+div[data-testid="stToggle"] label p {
+color: #FFFFFF !important;
+-webkit-text-fill-color: #FFFFFF !important;
+opacity: 1 !important;
+font-size: 1.1rem !important;
+font-weight: 700 !important;
+}
+
 hr {
 border-color: #294968;
 }
@@ -461,41 +489,358 @@ THE CRICKET ALCHEMIST · BOWLING LAB
     )
 
 
-def build_one_liner(df, detection_pct, reliable_pct, break_count, release_time):
-    """The single sentence a player needs: what happened at release, and can it be trusted."""
+# -------------------- PLAYER REPORT (built only from this clip's own measurements) --------------------
+
+def _series_facts(df, column, release_time):
+    """Lowest, highest and at-release values of one measurement, with their times."""
+    data = df[["time_seconds", column]].dropna()
+    if len(data) < 3:
+        return None
+    low, high = data[column].idxmin(), data[column].idxmax()
+    facts = {
+        "min": float(data.at[low, column]), "min_t": float(data.at[low, "time_seconds"]),
+        "max": float(data.at[high, column]), "max_t": float(data.at[high, "time_seconds"]),
+        "at_release": None,
+    }
+    facts["range"] = facts["max"] - facts["min"]
+    if release_time is not None:
+        near = data[(data["time_seconds"] - release_time).abs() <= 0.2]
+        if not near.empty:
+            row = (near["time_seconds"] - release_time).abs().idxmin()
+            facts["at_release"] = float(near.at[row, column])
+    return facts
+
+
+def _unreliable_ranges(df):
+    """(start, end) times where tracking was unreliable, for shading on charts."""
+    if df.empty or "reliable" not in df.columns or len(df) < 2:
+        return []
+    times = df["time_seconds"].to_numpy(float)
+    ok = df["reliable"].to_numpy(bool)
+    steps = np.diff(times)
+    steps = steps[steps > 0]
+    half = float(np.median(steps)) / 2.0 if len(steps) else 0.0
+    ranges, start = [], None
+    for i in range(len(ok) + 1):
+        bad = i < len(ok) and not ok[i]
+        if bad and start is None:
+            start = i
+        elif not bad and start is not None:
+            ranges.append((float(times[start] - half), float(times[i - 1] + half)))
+            start = None
+    return ranges
+
+
+def build_player_report(df, detection_pct, reliable_pct, break_count, view_info,
+                        release_time, key_moments):
+    """
+    Everything the player sees, worked out from this clip's own data. Every number and
+    every conditional sentence comes from the measurements; nothing is a fixed result.
+    """
     if df.empty or detection_pct <= 0:
-        return "❌ We could not find a bowler in this clip. Try a clip with your whole body in view."
-    if reliable_pct < 40:
-        return ("❌ We could not follow you reliably in this clip. Try one steady side-on clip "
-                "with only the bowler in view.")
-    if release_time is None:
-        return ("⚠️ We tracked your movement but could not pin down your release. "
-                "Open the full analysis to explore.")
+        return {"empty": True,
+                "message": "We could not find a bowler in this clip. Try a clip with your "
+                           "whole body in view and good light."}
 
-    def at_release(column):
-        values = df[["time_seconds", column]].dropna()
-        values = values[(values["time_seconds"] - release_time).abs() <= 0.2]
-        if values.empty:
-            return None
-        row = (values["time_seconds"] - release_time).abs().idxmin()
-        return float(values.at[row, column])
+    if reliable_pct >= 75 and detection_pct >= 70 and break_count == 0:
+        level, trust_title = "good", "Good clip"
+    elif reliable_pct >= 40:
+        level, trust_title = "ok", "Usable clip, treat the numbers as rough"
+    else:
+        level, trust_title = "poor", "Hard clip, the numbers may mislead"
+    trust_detail = (
+        f"The app followed your body reliably in {reliable_pct:.0f}% of the frames it checked"
+        + (f", and saw the picture jump {break_count} time(s) (a camera cut or another "
+           "person); those moments are left out." if break_count else ".")
+    )
 
-    parts = []
-    knee, elbow = at_release("knee_angle_deg"), at_release("elbow_angle_deg")
-    if knee is not None:
-        parts.append(f"your knee is at {knee:.0f}°")
-    if elbow is not None:
-        parts.append(f"your elbow is at {elbow:.0f}°")
-    if not parts:
-        return ("⚠️ We could not measure your knee or elbow around the release. "
-                "Open the full analysis to explore.")
+    tracked_sides = df.loc[df["reliable"] & df["measured_side"].isin(["left", "right"]),
+                           "measured_side"]
+    side = tracked_sides.mode().iloc[0] if not tracked_sides.empty else None
 
-    good = reliable_pct >= 75 and detection_pct >= 70 and break_count == 0
-    sentence = (f"{'✅' if good else '⚠️'} At release (about {release_time:.1f} s), "
-                + " and ".join(parts) + " (180° = fully straight).")
-    if not good:
-        sentence += " Some frames were unreliable, so treat this as rough."
-    return sentence
+    knee = _series_facts(df, "knee_angle_deg", release_time)
+    elbow = _series_facts(df, "elbow_angle_deg", release_time)
+
+    def angle(facts):
+        return None if not facts or facts["at_release"] is None else f"{facts['at_release']:.0f}°"
+
+    tiles = [
+        ("BALL LEAVES YOUR HAND", None if release_time is None else f"{release_time:.1f} s",
+         "this far into the clip (automatic guess)"),
+        ("LEG AT RELEASE", angle(knee),
+         f"your {side} leg" if side else "the leg closest to the camera"),
+        ("ELBOW AT RELEASE", angle(elbow),
+         f"your {side} arm" if side else "the arm closest to the camera"),
+    ]
+
+    sections = []
+    if knee:
+        lines = [f"Deepest bend: {knee['min']:.0f}° at {knee['min_t']:.1f} s.",
+                 f"Straightest: {knee['max']:.0f}° at {knee['max_t']:.1f} s."]
+        if knee["at_release"] is not None:
+            lines.append(f"At release: {knee['at_release']:.0f}°.")
+            if release_time is not None and knee["min_t"] <= release_time:
+                change = knee["at_release"] - knee["min"]
+                gap = release_time - knee["min_t"]
+                if abs(change) >= 10:
+                    verb = "straightened" if change > 0 else "bent a further"
+                    lines.append(f"From its deepest bend to release ({gap:.1f} s later) your leg "
+                                 f"{verb} {abs(change):.0f}°.")
+                else:
+                    lines.append(f"From its deepest bend to release ({gap:.1f} s later) your leg "
+                                 "changed by less than 10°.")
+        sections.append({"title": f"YOUR {side.upper()} LEG" if side else "YOUR LEG",
+                         "lines": lines})
+    if elbow:
+        lines = [f"Most bent: {elbow['min']:.0f}° at {elbow['min_t']:.1f} s.",
+                 f"Straightest: {elbow['max']:.0f}° at {elbow['max_t']:.1f} s.",
+                 f"Total movement across the clip: {elbow['range']:.0f}°."]
+        if elbow["at_release"] is not None:
+            lines.insert(2, f"At release: {elbow['at_release']:.0f}°.")
+        sections.append({"title": f"YOUR {side.upper()} ELBOW" if side else "YOUR ELBOW",
+                         "lines": lines})
+
+    if view_info is not None:
+        label = view_info["label"].lower()
+        if "side-on" in label:
+            effect = "That is the best angle for knee and elbow readings."
+        elif "semi" in label:
+            effect = "That is a diagonal view, so knee and elbow readings are rough."
+        else:
+            effect = "Knee and elbow readings are less reliable from this angle."
+        sections.append({
+            "title": "YOUR CAMERA",
+            "lines": [f"The camera looked {label.replace(' view', '')} (about "
+                      f"{view_info['median']:.0f}°, where 0° is front-on and 90° is side-on). "
+                      f"{effect}"],
+        })
+
+    tips = []
+    if break_count:
+        tips.append("Film one continuous shot. The picture jumped or cut in this clip.")
+    if view_info is not None and "side-on" not in view_info["label"].lower():
+        tips.append("Put the camera side-on, at right angles to your run-up.")
+    if reliable_pct < 75:
+        tips.append("Keep only you in the picture, whole body in view, in good light.")
+    tips.append("Film every delivery from the same spot so you can compare your numbers "
+                "from one session to the next.")
+    sections.append({"title": "FOR A BETTER READING NEXT TIME", "lines": tips})
+
+    wanted = []
+    release_row = next((m["row"] for m in key_moments if m["key"] == "release"), None)
+    knee_row = next((m["row"] for m in key_moments if m["key"] == "knee"), None)
+    if release_row is not None:
+        wanted.append(("Your body at the likely release", release_row))
+    if knee_row is not None and knee_row != release_row:
+        wanted.append(("Your deepest leg bend", knee_row))
+
+    def values(column):
+        return [None if pd.isna(v) else round(float(v), 1) for v in df[column]]
+
+    return {
+        "empty": False, "level": level, "trust_title": trust_title,
+        "trust_detail": trust_detail, "tiles": tiles, "sections": sections,
+        "photos": wanted, "release_time": release_time,
+        "chart": {"times": [round(float(t), 3) for t in df["time_seconds"]],
+                  "leg": values("knee_angle_deg"), "elbow": values("elbow_angle_deg"),
+                  "bad": _unreliable_ranges(df)},
+    }
+
+
+def get_report_images(analysis, model):
+    """JPEG frames for the report photos (cached on the analysis)."""
+    if model.get("empty") or not model["photos"]:
+        return []
+    cache = analysis.setdefault("report_images", {})
+    rows = [row for _, row in model["photos"]]
+    missing = [row for row in rows if row not in cache]
+    if missing:
+        if analysis.get("overlay_video_bytes"):
+            cache.update(extract_video_frames(analysis["overlay_video_bytes"], missing))
+        else:
+            fallback = analysis.get("overlay_frames") or []
+            cache.update({row: fallback[row] for row in missing if row < len(fallback)})
+    return [(label, cache[row]) for label, row in model["photos"] if row in cache]
+
+
+def svg_chart(title, times, values, release_time, bad, width=640, height=180):
+    """A small self-contained line chart (0 to 190 degrees) with release and unreliable shading."""
+    if not any(v is not None for v in values) or len(times) < 2:
+        return ""
+    left, right, top, bottom = 44, 12, 26, 26
+    t0, t1 = min(times), max(times)
+    span = max(t1 - t0, 1e-6)
+
+    def x_of(t):
+        return left + (t - t0) / span * (width - left - right)
+
+    def y_of(v):
+        return top + (1 - min(max(v, 0.0), 190.0) / 190.0) * (height - top - bottom)
+
+    out = [f'<svg viewBox="0 0 {width} {height}" xmlns="http://www.w3.org/2000/svg" '
+           f'role="img" aria-label="{html.escape(title)}">']
+    for x0, x1 in bad:
+        out.append(f'<rect class="bad" x="{x_of(max(x0, t0)):.1f}" y="{top}" '
+                   f'width="{max(x_of(min(x1, t1)) - x_of(max(x0, t0)), 0):.1f}" '
+                   f'height="{height - top - bottom}"/>')
+    for g in (0, 60, 120, 180):
+        out.append(f'<line class="ax" x1="{left}" x2="{width - right}" y1="{y_of(g):.1f}" '
+                   f'y2="{y_of(g):.1f}"/><text x="{left - 6}" y="{y_of(g) + 4:.1f}" '
+                   f'text-anchor="end">{g}°</text>')
+    path, pen = [], False
+    for t, v in zip(times, values):
+        if v is None:
+            pen = False
+            continue
+        path.append(f'{"L" if pen else "M"}{x_of(t):.1f} {y_of(v):.1f}')
+        pen = True
+    out.append(f'<path class="ln" d="{" ".join(path)}"/>')
+    if release_time is not None and t0 <= release_time <= t1:
+        out.append(f'<line class="rel" x1="{x_of(release_time):.1f}" x2="{x_of(release_time):.1f}" '
+                   f'y1="{top - 4}" y2="{height - bottom}"/>'
+                   f'<text class="relt" x="{x_of(release_time) + 4:.1f}" y="{top + 8}">release</text>')
+    out.append(f'<text class="ttl" x="{left}" y="15">{html.escape(title)}</text>')
+    out.append(f'<text x="{left}" y="{height - 8}">{t0:.1f} s</text>'
+               f'<text x="{width - right}" y="{height - 8}" text-anchor="end">{t1:.1f} s</text>')
+    out.append("</svg>")
+    return "".join(out)
+
+
+CHART_CSS_DARK = (
+    ".ax{stroke:#1E3550;stroke-width:1}.ln{stroke:#4CC1FF;fill:none;stroke-width:2.5}"
+    ".rel{stroke:#FFD16D;stroke-width:1.5;stroke-dasharray:4 3}.relt{fill:#FFD16D}"
+    ".bad{fill:rgba(255,127,150,.18)}svg{width:100%;height:auto;display:block;margin:6px 0}"
+    "svg text{fill:#C2D0E2;font:11px Arial,sans-serif}svg .ttl{fill:#fff;font:bold 13px Arial,sans-serif}"
+)
+
+
+def player_charts_html(model):
+    chart = model["chart"]
+    parts = [
+        svg_chart("YOUR LEG ANGLE OVER TIME (degrees)", chart["times"], chart["leg"],
+                  model["release_time"], chart["bad"]),
+        svg_chart("YOUR ELBOW ANGLE OVER TIME (degrees)", chart["times"], chart["elbow"],
+                  model["release_time"], chart["bad"]),
+    ]
+    return "".join(parts)
+
+
+def render_player_report_page(model, images):
+    """The player's report on the page: big numbers, short facts, photos and two small charts."""
+    if model["empty"]:
+        st.warning(model["message"])
+        return
+    badge = {"good": "✅", "ok": "⚠️", "poor": "❌"}[model["level"]]
+    st.markdown(
+        f"""
+<div class="panel">
+<div class="kicker">YOUR BOWLING REPORT</div>
+<p style="font-size:1.4rem;font-weight:800;color:#FFFFFF;margin:.5rem 0 .3rem">{badge} {html.escape(model["trust_title"])}</p>
+<div class="muted">{html.escape(model["trust_detail"])}</div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+    for col, (label, value, note) in zip(st.columns(3), model["tiles"]):
+        col.metric(label, "–" if value is None else value)
+        col.caption(note)
+
+    if images:
+        for col, (label, data) in zip(st.columns(len(images)), images):
+            col.image(data, caption=label)
+
+    charts = player_charts_html(model)
+    if charts:
+        components.html(f"<style>body{{margin:0;background:transparent}}{CHART_CSS_DARK}</style>{charts}",
+                        height=400)
+        st.caption("Pink shading marks moments the app could not follow you reliably; they are "
+                   "left out of the numbers.")
+
+    for section in model["sections"]:
+        items = "".join(f"<li>{html.escape(line)}</li>" for line in section["lines"])
+        st.markdown(
+            f'<div class="panel"><h3>{html.escape(section["title"])}</h3><ul>{items}</ul></div>',
+            unsafe_allow_html=True,
+        )
+    st.caption("A guide made from one phone video. It does not judge whether your action is good "
+               "or legal, and it does not assess injury risk. Angles: 180° is completely "
+               "straight, smaller means more bent. Ask your coach to look at the video with you.")
+
+
+def build_player_report_html(player_name, model, images):
+    """Downloadable, self-contained version of the same report (prints cleanly to PDF)."""
+    esc = html.escape
+    colours = {"good": "#2e9e5b", "ok": "#d99a1c", "poor": "#d04c4c"}
+    name_html = (f'<div class="who">{esc(player_name.strip())}</div>'
+                 if player_name and player_name.strip() else "")
+    if model["empty"]:
+        body = f'<div class="hero"><p>{esc(model["message"])}</p></div>'
+    else:
+        tiles = "".join(
+            f'<div class="tile"><div class="tl">{esc(label)}</div>'
+            f'<div class="tv">{esc("–" if value is None else value)}</div>'
+            f'<div class="tn">{esc(note)}</div></div>'
+            for label, value, note in model["tiles"]
+        )
+        photos = "".join(
+            f'<div class="photo"><img alt="{esc(label)}" '
+            f'src="data:image/jpeg;base64,{base64.b64encode(data).decode("ascii")}">'
+            f'<div class="cap">{esc(label)}</div></div>'
+            for label, data in images
+        )
+        sections = "".join(
+            f'<h2>{esc(sec["title"])}</h2><ul>' + "".join(f"<li>{esc(l)}</li>" for l in sec["lines"])
+            + "</ul>"
+            for sec in model["sections"]
+        )
+        charts = player_charts_html(model)
+        body = (
+            f'<div class="hero"><p>{esc(model["trust_title"])}</p>'
+            f'<span class="badge" style="background:{colours[model["level"]]}">'
+            f'{esc(model["trust_detail"])}</span></div>'
+            f'<div class="tiles">{tiles}</div><div class="photos">{photos}</div>'
+            f'<h2>HOW YOUR LEG AND ELBOW MOVED</h2>{charts}'
+            '<div class="cap">Pink shading marks moments the app could not follow you reliably.</div>'
+            f'{sections}'
+        )
+    css = """
+*{box-sizing:border-box}
+body{margin:0;background:#071322;color:#F5F8FF;font-family:Arial,Helvetica,sans-serif;line-height:1.5}
+.page{max-width:760px;margin:0 auto;padding:22px 18px 36px}
+.brand{color:#FFD16D;letter-spacing:.18em;font-size:.78rem;font-weight:800}
+h1{font-size:2rem;margin:.3rem 0 0;color:#fff}
+.who{font-size:1.2rem;color:#FFD16D;font-weight:700;margin-top:.2rem}
+.date{color:#9fb3c8;font-size:.9rem;margin-bottom:1rem}
+.hero{background:#10243A;border:1px solid #294968;border-radius:16px;padding:16px 18px;margin:12px 0}
+.hero p{font-size:1.3rem;font-weight:700;margin:.2rem 0 .6rem;color:#fff}
+.badge{display:inline-block;border-radius:12px;padding:6px 12px;font-size:.88rem;font-weight:700;color:#fff}
+.tiles{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:12px 0}
+.tile{background:#0C1B2D;border:1px solid #2A4B6B;border-radius:14px;padding:12px}
+.tl{font-size:.68rem;letter-spacing:.08em;color:#C2D0E2;font-weight:700}
+.tv{font-size:2rem;font-weight:800;color:#FFD16D;margin:.2rem 0}
+.tn{font-size:.78rem;color:#9fb3c8}
+h2{font-size:1.05rem;color:#FFD16D;margin:1.4rem 0 .3rem;letter-spacing:.04em}
+ul{margin:.3rem 0 .3rem 1.1rem;padding:0} li{margin:.25rem 0}
+.photos{display:flex;flex-wrap:wrap;gap:12px;justify-content:center}
+.photo{text-align:center;flex:1 1 220px}.photo img{max-width:100%;max-height:380px;border-radius:12px;border:1px solid #294968}
+.cap{font-size:.8rem;color:#9fb3c8;margin-top:4px}
+.note{font-size:.82rem;color:#9fb3c8;border-top:1px solid #294968;margin-top:1.6rem;padding-top:.8rem}
+@media (max-width:560px){.tiles{grid-template-columns:1fr}}
+@media print{body{background:#fff;color:#14202e} h1,.hero p{color:#14202e} .hero,.tile{background:#fff;border-color:#bbb}
+.tv,h2,.who,.brand{color:#8a5a00} .tl,.tn,.cap,.note,.date{color:#444} .tile,.hero,.photo,svg{break-inside:avoid}
+svg text{fill:#333!important} svg .ttl{fill:#000!important} .ln{stroke:#1f6fb2!important} .ax{stroke:#ccc!important}}
+"""
+    return (
+        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        f"<title>My bowling report</title><style>{css}{CHART_CSS_DARK}</style></head><body><div class=\"page\">"
+        '<div class="brand">THE CRICKET ALCHEMIST · BOWLING LAB</div><h1>My bowling report</h1>'
+        f'{name_html}<div class="date">{datetime.now().strftime("%d %b %Y")}</div>{body}'
+        '<div class="note">This report is a guide made from one phone video. It does not judge whether '
+        'your action is good or legal, and it does not assess injury risk. Angles: 180° is completely '
+        'straight, smaller means more bent. Ask your coach to look at the video with you.</div>'
+        "</div></body></html>"
+    )
 
 
 def upload_key(uploaded_file):
@@ -1779,7 +2124,7 @@ step_info = [
     (
         "STEP 3",
         "Start with the summary",
-        "Read RESULTS AT A GLANCE first. Everything below it is extra detail you can skip.",
+        "Read YOUR BOWLING REPORT first. Everything below it is extra detail you can skip.",
     ),
 ]
 
@@ -2089,27 +2434,41 @@ if analysis is not None:
 
     glance_slot = st.container()
 
-    # Quiet calculations used by the one-line answer (the sections below reuse them).
+    # Calculations for the player report (the sections below reuse them).
     view_info = describe_camera_view(df)
     key_moments = detect_key_moments(df)
     release_time = next(
         (moment["time"] for moment in key_moments if moment["key"] == "release"), None
     )
-    one_line = build_one_liner(df, detection_pct, reliable_pct, break_count, release_time)
+    report_model = build_player_report(
+        df, detection_pct, reliable_pct, break_count, view_info, release_time, key_moments
+    )
+    report_images = get_report_images(analysis, report_model)
     with glance_slot:
-        st.markdown(
-            f"""
-<div class="panel">
-<div class="kicker">YOUR RESULT IN ONE LINE</div>
-<p style="font-size:1.5rem;font-weight:800;color:#FFFFFF;line-height:1.4;margin:.6rem 0 .4rem">{html.escape(one_line)}</p>
-<div class="muted">Knee and elbow are for the leg and arm closest to the camera. The release
-time is an automatic guess.</div>
-</div>
-""",
-            unsafe_allow_html=True,
+        render_player_report_page(report_model, report_images)
+        player_name = st.text_input(
+            "Your name (optional, shown on your report)", key="player_name", max_chars=40
         )
+        if call_stretch(st.button, "📄 CREATE MY PLAYER REPORT", key="make_player_report"):
+            try:
+                analysis["player_report_html"] = build_player_report_html(
+                    player_name, report_model, report_images
+                ).encode("utf-8")
+            except Exception as error:  # noqa: BLE001 - shown to the user
+                st.error(f"Could not build your report: {error}")
+        if analysis.get("player_report_html"):
+            download_link(
+                "⬇ DOWNLOAD MY PLAYER REPORT",
+                analysis["player_report_html"],
+                "my_bowling_report.html",
+                "text/html",
+            )
+            st.caption(
+                "Open the file in your phone or computer browser. To get a PDF, choose "
+                "Share or Print, then Save as PDF."
+            )
         show_full = st.toggle(
-            "Show the full analysis (videos, 3D view, graphs, report)",
+            "Show the detailed analysis (videos, 3D view, graphs, coach report)",
             value=False,
             key="show_full_analysis",
         )
@@ -2222,30 +2581,6 @@ as a rough guide.</div>
     release_time = next(
         (moment["time"] for moment in key_moments if moment["key"] == "release"), None
     )
-    glance = build_glance(df, detection_pct, reliable_pct, break_count, view_info, release_time)
-    with glance_slot:
-        glance_points = "".join(f"<li>{html.escape(item)}</li>" for item in glance["points"])
-        glance_next = "".join(f"<li>{html.escape(item)}</li>" for item in glance["next"])
-        next_html = (
-            '<div class="kicker" style="margin-top:.8rem">WHAT TO DO NEXT</div>'
-            f'<ol style="margin:.4rem 0 .6rem 1.1rem;padding:0;color:#E0EAF7;line-height:1.65">'
-            f"{glance_next}</ol>"
-            if glance_next else ""
-        )
-        st.markdown(
-            f"""
-<div class="panel">
-<h3>RESULTS AT A GLANCE</h3>
-<p style="font-size:1.15rem;font-weight:700;color:#FFFFFF;margin:.2rem 0 .6rem">{html.escape(glance["headline"])}</p>
-<ul>{glance_points}</ul>
-{next_html}
-<div class="muted">These are guides, not a verdict. The app does not judge injury risk or
-whether a bowling action is legal. Ask a coach to check against the original video.</div>
-</div>
-""",
-            unsafe_allow_html=True,
-        )
-
     if not key_moments:
         st.info("No key moments could be estimated because too few landmarks were visible.")
     else:
