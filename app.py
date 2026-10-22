@@ -244,11 +244,17 @@ padding: 1rem;
 color: #E7F0FC !important;
 }
 
-/* WIDGET LABELS (for example "Camera for the 3D video"): bright white and large */
-div[data-testid="stWidgetLabel"],
-div[data-testid="stWidgetLabel"] p,
-div[data-testid="stWidgetLabel"] label,
-div[data-testid="stWidgetLabel"] span {
+/* WIDGET LABELS (for example "Your name" or "Camera for the 3D video"): bright white and large.
+   Newer Streamlit puts data-testid="stWidgetLabel" on a <label>, older on a <div>,
+   so these selectors do not name the tag. */
+[data-testid="stWidgetLabel"],
+[data-testid="stWidgetLabel"] *,
+.stApp label[data-testid="stWidgetLabel"] p,
+.stTextInput label,
+.stTextInput label *,
+.stSelectbox label *,
+.stSlider label *,
+.stSelectSlider label * {
 color: #FFFFFF !important;
 -webkit-text-fill-color: #FFFFFF !important;
 opacity: 1 !important;
@@ -257,14 +263,25 @@ font-weight: 800 !important;
 letter-spacing: .02em !important;
 }
 
+/* What the player types into text boxes */
+div[data-testid="stTextInput"] input,
+div[data-testid="stTextInput"] input::placeholder {
+color: #FFFFFF !important;
+-webkit-text-fill-color: #FFFFFF !important;
+font-size: 1.15rem !important;
+font-weight: 600 !important;
+}
+div[data-testid="stTextInput"] input::placeholder {
+opacity: .6 !important;
+}
+
 /* Choices inside radio buttons, toggles and checkboxes */
-div[data-testid="stRadio"] [role="radiogroup"] label,
-div[data-testid="stRadio"] [role="radiogroup"] label p,
-div[data-testid="stRadio"] [role="radiogroup"] label div,
-div[data-testid="stCheckbox"] label,
-div[data-testid="stCheckbox"] label p,
-div[data-testid="stToggle"] label,
-div[data-testid="stToggle"] label p {
+[data-testid="stRadio"] [role="radiogroup"] label,
+[data-testid="stRadio"] [role="radiogroup"] label *,
+[data-testid="stCheckbox"] label,
+[data-testid="stCheckbox"] label *,
+[data-testid="stToggle"] label,
+[data-testid="stToggle"] label * {
 color: #FFFFFF !important;
 -webkit-text-fill-color: #FFFFFF !important;
 opacity: 1 !important;
@@ -491,6 +508,19 @@ THE CRICKET ALCHEMIST · BOWLING LAB
 
 # -------------------- PLAYER REPORT (built only from this clip's own measurements) --------------------
 
+def bend_word(value):
+    """An everyday word for how bent a joint is (180° is completely straight)."""
+    if value >= 165:
+        return "straight"
+    if value >= 145:
+        return "almost straight"
+    if value >= 115:
+        return "slightly bent"
+    if value >= 85:
+        return "bent"
+    return "very bent"
+
+
 def _series_facts(df, column, release_time):
     """Lowest, highest and at-release values of one measurement, with their times."""
     data = df[["time_seconds", column]].dropna()
@@ -545,13 +575,13 @@ def build_player_report(df, detection_pct, reliable_pct, break_count, view_info,
     if reliable_pct >= 75 and detection_pct >= 70 and break_count == 0:
         level, trust_title = "good", "Good clip"
     elif reliable_pct >= 40:
-        level, trust_title = "ok", "Usable clip, treat the numbers as rough"
+        level, trust_title = "ok", "Okay clip: the numbers are rough"
     else:
-        level, trust_title = "poor", "Hard clip, the numbers may mislead"
+        level, trust_title = "poor", "Tough clip: the numbers may be wrong"
     trust_detail = (
-        f"The app followed your body reliably in {reliable_pct:.0f}% of the frames it checked"
-        + (f", and saw the picture jump {break_count} time(s) (a camera cut or another "
-           "person); those moments are left out." if break_count else ".")
+        f"The app could follow your body in {reliable_pct:.0f} out of every 100 moments."
+        + (f" The picture jumped {break_count} time(s) (a camera cut, or someone else came "
+           "into view). Those moments were ignored." if break_count else "")
     )
 
     tracked_sides = df.loc[df["reliable"] & df["measured_side"].isin(["left", "right"]),
@@ -561,78 +591,83 @@ def build_player_report(df, detection_pct, reliable_pct, break_count, view_info,
     knee = _series_facts(df, "knee_angle_deg", release_time)
     elbow = _series_facts(df, "elbow_angle_deg", release_time)
 
-    def angle(facts):
-        return None if not facts or facts["at_release"] is None else f"{facts['at_release']:.0f}°"
+    def said(value):
+        return f"{bend_word(value)} ({value:.0f}°)"
 
+    def tile_word(facts):
+        if not facts or facts["at_release"] is None:
+            return None, "could not be measured at that moment"
+        return (bend_word(facts["at_release"]).capitalize(),
+                f"{facts['at_release']:.0f}° (180° is fully straight)")
+
+    leg_word, leg_note = tile_word(knee)
+    elbow_word, elbow_note = tile_word(elbow)
     tiles = [
-        ("BALL LEAVES YOUR HAND", None if release_time is None else f"{release_time:.1f} s",
-         "this far into the clip (automatic guess)"),
-        ("LEG AT RELEASE", angle(knee),
-         f"your {side} leg" if side else "the leg closest to the camera"),
-        ("ELBOW AT RELEASE", angle(elbow),
-         f"your {side} arm" if side else "the arm closest to the camera"),
+        ("WHEN THE BALL LEAVES YOUR HAND",
+         None if release_time is None else f"{release_time:.1f} s into the clip",
+         "our best guess from your arm"),
+        ("YOUR LEG THEN", leg_word, (f"your {side} leg: " if side else "") + leg_note),
+        ("YOUR ELBOW THEN", elbow_word, (f"your {side} arm: " if side else "") + elbow_note),
     ]
 
     sections = []
     if knee:
-        lines = [f"Deepest bend: {knee['min']:.0f}° at {knee['min_t']:.1f} s.",
-                 f"Straightest: {knee['max']:.0f}° at {knee['max_t']:.1f} s."]
+        lines = [f"Most bent: {said(knee['min'])}, {knee['min_t']:.1f} seconds into the clip.",
+                 f"Straightest: {said(knee['max'])}, {knee['max_t']:.1f} seconds in."]
         if knee["at_release"] is not None:
-            lines.append(f"At release: {knee['at_release']:.0f}°.")
+            lines.append(f"When the ball left your hand: {said(knee['at_release'])}.")
             if release_time is not None and knee["min_t"] <= release_time:
                 change = knee["at_release"] - knee["min"]
                 gap = release_time - knee["min_t"]
                 if abs(change) >= 10:
-                    verb = "straightened" if change > 0 else "bent a further"
-                    lines.append(f"From its deepest bend to release ({gap:.1f} s later) your leg "
-                                 f"{verb} {abs(change):.0f}°.")
+                    verb = "straightened by" if change > 0 else "bent even more, by"
+                    lines.append(f"From its most bent moment to the ball leaving your hand "
+                                 f"({gap:.1f} seconds later), your leg {verb} {abs(change):.0f}°.")
                 else:
-                    lines.append(f"From its deepest bend to release ({gap:.1f} s later) your leg "
-                                 "changed by less than 10°.")
+                    lines.append(f"From its most bent moment to the ball leaving your hand "
+                                 f"({gap:.1f} seconds later), your leg hardly changed.")
         sections.append({"title": f"YOUR {side.upper()} LEG" if side else "YOUR LEG",
                          "lines": lines})
     if elbow:
-        lines = [f"Most bent: {elbow['min']:.0f}° at {elbow['min_t']:.1f} s.",
-                 f"Straightest: {elbow['max']:.0f}° at {elbow['max_t']:.1f} s.",
-                 f"Total movement across the clip: {elbow['range']:.0f}°."]
+        lines = [f"Most bent: {said(elbow['min'])}, {elbow['min_t']:.1f} seconds into the clip.",
+                 f"Straightest: {said(elbow['max'])}, {elbow['max_t']:.1f} seconds in."]
         if elbow["at_release"] is not None:
-            lines.insert(2, f"At release: {elbow['at_release']:.0f}°.")
+            lines.append(f"When the ball left your hand: {said(elbow['at_release'])}.")
+        lines.append(f"From most bent to straightest, your elbow moved by {elbow['range']:.0f}°.")
         sections.append({"title": f"YOUR {side.upper()} ELBOW" if side else "YOUR ELBOW",
                          "lines": lines})
 
     if view_info is not None:
         label = view_info["label"].lower()
         if "side-on" in label:
-            effect = "That is the best angle for knee and elbow readings."
+            camera_line = ("The camera was to your side. That is the best view for checking "
+                           "your leg and elbow.")
         elif "semi" in label:
-            effect = "That is a diagonal view, so knee and elbow readings are rough."
+            camera_line = ("The camera was at an angle to you, so the numbers are okay but less "
+                           "exact. For the best view, put the camera to your side.")
         else:
-            effect = "Knee and elbow readings are less reliable from this angle."
-        sections.append({
-            "title": "YOUR CAMERA",
-            "lines": [f"The camera looked {label.replace(' view', '')} (about "
-                      f"{view_info['median']:.0f}°, where 0° is front-on and 90° is side-on). "
-                      f"{effect}"],
-        })
+            camera_line = ("The camera was in front of you or behind you, so the leg and elbow "
+                           "numbers are less exact. For the best view, put the camera to your side.")
+        sections.append({"title": "WHERE THE CAMERA WAS", "lines": [camera_line]})
 
     tips = []
     if break_count:
-        tips.append("Film one continuous shot. The picture jumped or cut in this clip.")
+        tips.append("Film in one steady shot, with no cuts.")
     if view_info is not None and "side-on" not in view_info["label"].lower():
-        tips.append("Put the camera side-on, at right angles to your run-up.")
+        tips.append("Put the camera to your side, at right angles to your run-up.")
     if reliable_pct < 75:
-        tips.append("Keep only you in the picture, whole body in view, in good light.")
-    tips.append("Film every delivery from the same spot so you can compare your numbers "
-                "from one session to the next.")
-    sections.append({"title": "FOR A BETTER READING NEXT TIME", "lines": tips})
+        tips.append("Make sure only you are in the picture, your whole body can be seen, and "
+                    "there is good light.")
+    tips.append("Film every ball from the same spot, so you can compare one session with the next.")
+    sections.append({"title": "HOW TO GET A BETTER READING NEXT TIME", "lines": tips})
 
     wanted = []
     release_row = next((m["row"] for m in key_moments if m["key"] == "release"), None)
     knee_row = next((m["row"] for m in key_moments if m["key"] == "knee"), None)
     if release_row is not None:
-        wanted.append(("Your body at the likely release", release_row))
+        wanted.append(("Your body when the ball left your hand (our best guess)", release_row))
     if knee_row is not None and knee_row != release_row:
-        wanted.append(("Your deepest leg bend", knee_row))
+        wanted.append(("When your leg was most bent", knee_row))
 
     def values(column):
         return [None if pd.isna(v) else round(float(v), 1) for v in df[column]]
@@ -667,7 +702,7 @@ def svg_chart(title, times, values, release_time, bad, width=640, height=180):
     """A small self-contained line chart (0 to 190 degrees) with release and unreliable shading."""
     if not any(v is not None for v in values) or len(times) < 2:
         return ""
-    left, right, top, bottom = 44, 12, 26, 26
+    left, right, top, bottom = 84, 12, 26, 26
     t0, t1 = min(times), max(times)
     span = max(t1 - t0, 1e-6)
 
@@ -683,10 +718,10 @@ def svg_chart(title, times, values, release_time, bad, width=640, height=180):
         out.append(f'<rect class="bad" x="{x_of(max(x0, t0)):.1f}" y="{top}" '
                    f'width="{max(x_of(min(x1, t1)) - x_of(max(x0, t0)), 0):.1f}" '
                    f'height="{height - top - bottom}"/>')
-    for g in (0, 60, 120, 180):
+    for g, word in ((180, "straight"), (120, "bent a bit"), (60, "very bent")):
         out.append(f'<line class="ax" x1="{left}" x2="{width - right}" y1="{y_of(g):.1f}" '
                    f'y2="{y_of(g):.1f}"/><text x="{left - 6}" y="{y_of(g) + 4:.1f}" '
-                   f'text-anchor="end">{g}°</text>')
+                   f'text-anchor="end">{word}</text>')
     path, pen = [], False
     for t, v in zip(times, values):
         if v is None:
@@ -698,10 +733,10 @@ def svg_chart(title, times, values, release_time, bad, width=640, height=180):
     if release_time is not None and t0 <= release_time <= t1:
         out.append(f'<line class="rel" x1="{x_of(release_time):.1f}" x2="{x_of(release_time):.1f}" '
                    f'y1="{top - 4}" y2="{height - bottom}"/>'
-                   f'<text class="relt" x="{x_of(release_time) + 4:.1f}" y="{top + 8}">release</text>')
+                   f'<text class="relt" x="{x_of(release_time) + 4:.1f}" y="{top + 8}">ball leaves hand</text>')
     out.append(f'<text class="ttl" x="{left}" y="15">{html.escape(title)}</text>')
-    out.append(f'<text x="{left}" y="{height - 8}">{t0:.1f} s</text>'
-               f'<text x="{width - right}" y="{height - 8}" text-anchor="end">{t1:.1f} s</text>')
+    out.append(f'<text x="{left}" y="{height - 8}">{t0:.1f} seconds</text>'
+               f'<text x="{width - right}" y="{height - 8}" text-anchor="end">{t1:.1f} seconds</text>')
     out.append("</svg>")
     return "".join(out)
 
@@ -717,9 +752,9 @@ CHART_CSS_DARK = (
 def player_charts_html(model):
     chart = model["chart"]
     parts = [
-        svg_chart("YOUR LEG ANGLE OVER TIME (degrees)", chart["times"], chart["leg"],
+        svg_chart("YOUR LEG: STRAIGHT OR BENT, THROUGH THE CLIP", chart["times"], chart["leg"],
                   model["release_time"], chart["bad"]),
-        svg_chart("YOUR ELBOW ANGLE OVER TIME (degrees)", chart["times"], chart["elbow"],
+        svg_chart("YOUR ELBOW: STRAIGHT OR BENT, THROUGH THE CLIP", chart["times"], chart["elbow"],
                   model["release_time"], chart["bad"]),
     ]
     return "".join(parts)
@@ -736,7 +771,8 @@ def render_player_report_page(model, images):
 <div class="panel">
 <div class="kicker">YOUR BOWLING REPORT</div>
 <p style="font-size:1.4rem;font-weight:800;color:#FFFFFF;margin:.5rem 0 .3rem">{badge} {html.escape(model["trust_title"])}</p>
-<div class="muted">{html.escape(model["trust_detail"])}</div>
+<div class="muted">This shows how your body moved in the video you uploaded.</div>
+<div class="muted" style="margin-top:.3rem">{html.escape(model["trust_detail"])}</div>
 </div>
 """,
         unsafe_allow_html=True,
@@ -753,8 +789,7 @@ def render_player_report_page(model, images):
     if charts:
         components.html(f"<style>body{{margin:0;background:transparent}}{CHART_CSS_DARK}</style>{charts}",
                         height=400)
-        st.caption("Pink shading marks moments the app could not follow you reliably; they are "
-                   "left out of the numbers.")
+        st.caption("Pink shading = moments the app could not follow you, so they were ignored.")
 
     for section in model["sections"]:
         items = "".join(f"<li>{html.escape(line)}</li>" for line in section["lines"])
@@ -762,9 +797,9 @@ def render_player_report_page(model, images):
             f'<div class="panel"><h3>{html.escape(section["title"])}</h3><ul>{items}</ul></div>',
             unsafe_allow_html=True,
         )
-    st.caption("A guide made from one phone video. It does not judge whether your action is good "
-               "or legal, and it does not assess injury risk. Angles: 180° is completely "
-               "straight, smaller means more bent. Ask your coach to look at the video with you.")
+    st.caption("This is a guide made from one phone video. It cannot tell you whether your action "
+               "is good or legal, or whether you might get injured. 180° means completely "
+               "straight; smaller means more bent. Show it to your coach.")
 
 
 def build_player_report_html(player_name, model, images):
@@ -800,7 +835,7 @@ def build_player_report_html(player_name, model, images):
             f'{esc(model["trust_detail"])}</span></div>'
             f'<div class="tiles">{tiles}</div><div class="photos">{photos}</div>'
             f'<h2>HOW YOUR LEG AND ELBOW MOVED</h2>{charts}'
-            '<div class="cap">Pink shading marks moments the app could not follow you reliably.</div>'
+            '<div class="cap">Pink shading = moments the app could not follow you, so they were ignored.</div>'
             f'{sections}'
         )
     css = """
@@ -817,7 +852,7 @@ h1{font-size:2rem;margin:.3rem 0 0;color:#fff}
 .tiles{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:12px 0}
 .tile{background:#0C1B2D;border:1px solid #2A4B6B;border-radius:14px;padding:12px}
 .tl{font-size:.68rem;letter-spacing:.08em;color:#C2D0E2;font-weight:700}
-.tv{font-size:2rem;font-weight:800;color:#FFD16D;margin:.2rem 0}
+.tv{font-size:1.6rem;font-weight:800;color:#FFD16D;margin:.2rem 0}
 .tn{font-size:.78rem;color:#9fb3c8}
 h2{font-size:1.05rem;color:#FFD16D;margin:1.4rem 0 .3rem;letter-spacing:.04em}
 ul{margin:.3rem 0 .3rem 1.1rem;padding:0} li{margin:.25rem 0}
@@ -836,9 +871,9 @@ svg text{fill:#333!important} svg .ttl{fill:#000!important} .ln{stroke:#1f6fb2!i
         f"<title>My bowling report</title><style>{css}{CHART_CSS_DARK}</style></head><body><div class=\"page\">"
         '<div class="brand">THE CRICKET ALCHEMIST · BOWLING LAB</div><h1>My bowling report</h1>'
         f'{name_html}<div class="date">{datetime.now().strftime("%d %b %Y")}</div>{body}'
-        '<div class="note">This report is a guide made from one phone video. It does not judge whether '
-        'your action is good or legal, and it does not assess injury risk. Angles: 180° is completely '
-        'straight, smaller means more bent. Ask your coach to look at the video with you.</div>'
+        '<div class="note">This is a guide made from one phone video. It cannot tell you whether your '
+        'action is good or legal, or whether you might get injured. 180° means completely straight; '
+        'smaller means more bent. Show it to your coach.</div>'
         "</div></body></html>"
     )
 
@@ -2080,8 +2115,8 @@ st.markdown(
 <h1>THE CRICKET <span class="gold">ALCHEMIST</span></h1>
 <p>
 <b>Turn every delivery into a learning opportunity.</b>
-Compare bowling footage with a detected pose-skeleton overlay,
-inspect estimated joint angles and explore movement graphs.
+Film your bowling, upload it, and see how your body moved: for example, how straight
+your leg and elbow were when the ball left your hand.
 </p>
 <div class="brand">
 🏏 BOWLING LAB &nbsp; | &nbsp;
@@ -2119,7 +2154,7 @@ step_info = [
     (
         "STEP 2",
         "Press the gold button",
-        "The app finds the bowler's body in every frame. This takes about 1 to 3 minutes.",
+        "The app follows your body through the whole video. This takes about 1 to 3 minutes, and you can leave and come back.",
     ),
     (
         "STEP 3",
@@ -2308,11 +2343,7 @@ if uploaded is not None:
 
 if source is not None:
     info = source["info"]
-    st.success(
-        f"Video ready: {source['name']} | "
-        f"{len(source['mp4_bytes']) / (1024 * 1024):.1f} MB (browser copy) | "
-        f"{info['width']} × {info['height']} @ {info['fps']:.1f} fps"
-    )
+    st.success(f"Your video is ready: {source['name']}. Press the gold button to start.")
     show_video(source["mp4_bytes"], info["width"], info["height"])
 
     current_job = get_job(st.session_state.get("job_id"))
