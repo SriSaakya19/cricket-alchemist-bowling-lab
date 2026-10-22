@@ -275,6 +275,23 @@ div[data-testid="stTextInput"] input::placeholder {
 opacity: .6 !important;
 }
 
+/* The text box itself: dark background so the white text the player types is visible.
+   (Without this the box stays light grey and white text disappears.) */
+div[data-testid="stTextInput"] div[data-baseweb="input"],
+div[data-testid="stTextInput"] div[data-baseweb="base-input"],
+div[data-testid="stTextInput"] input {
+background: #0A1828 !important;
+background-color: #0A1828 !important;
+caret-color: #FFD16D !important;
+}
+div[data-testid="stTextInput"] div[data-baseweb="input"] {
+border: 1px solid #6893BB !important;
+border-radius: 10px !important;
+}
+div[data-testid="stTextInput"] div[data-baseweb="input"]:focus-within {
+border-color: #FFD16D !important;
+}
+
 /* Choices inside radio buttons, toggles and checkboxes */
 [data-testid="stRadio"] [role="radiogroup"] label,
 [data-testid="stRadio"] [role="radiogroup"] label *,
