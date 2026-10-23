@@ -657,15 +657,28 @@ def analyze_video(video_path: str, stride: int = 2, max_frames: int = 240,
         height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
         total_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
 
-        try:
-            pose_model = mp.solutions.pose.Pose(
+        def make_pose(complexity):
+            return mp.solutions.pose.Pose(
                 static_image_mode=False,
-                model_complexity=0 if int(model_complexity) <= 0 else 1,
+                model_complexity=complexity,
                 smooth_landmarks=True,
                 enable_segmentation=False,
                 min_detection_confidence=0.5,
                 min_tracking_confidence=0.5,
             )
+
+        wanted = 0 if int(model_complexity) <= 0 else 1
+        try:
+            try:
+                pose_model = make_pose(wanted)
+            except (OSError, PermissionError) as exc:
+                # The light model is downloaded on first use; some hosts do not allow
+                # writing into the package folder. The standard model ships inside
+                # the package, so use that instead of failing.
+                if wanted != 0:
+                    raise
+                logger.warning("Light pose model unavailable (%s); using the standard model.", exc)
+                pose_model = make_pose(1)
         except Exception as exc:  # noqa: BLE001
             raise ProcessorError(f"Could not initialize MediaPipe Pose: {exc}") from exc
 
