@@ -47,9 +47,10 @@ SUPPORTED_EXTENSIONS = (".mp4", ".mov", ".avi", ".m4v", ".mkv", ".webm")
 SOURCE_CONVERSION_TIMEOUT = 300
 OVERLAY_CONVERSION_TIMEOUT = 180
 PROBE_TIMEOUT = 30
-MAX_ENCODE_WIDTH = 960       # browser copy of the upload (lighter on small servers)
-MAX_CLIP_SECONDS = 60        # only the first minute of an upload is used
-MAX_OVERLAY_WIDTH = 960      # skeleton replay
+MAX_ENCODE_WIDTH = 720       # longest side of the browser copy (small = fast on a weak server)
+MAX_CLIP_SECONDS = 30        # only the first 30 seconds of an upload are used
+MAX_OVERLAY_WIDTH = 640      # skeleton replay
+ANALYSIS_MAX_SIDE = 640      # frames are shrunk to this before pose detection
 MAX_FALLBACK_WIDTH = 640     # JPEG frames used only if video encoding fails
 
 FFMPEG_MISSING_MESSAGE = (
@@ -184,7 +185,12 @@ def convert_to_browser_mp4(
     The scale filter keeps width and height even (required by yuv420p) and
     limits very large frames. FFmpeg applies phone rotation metadata itself.
     """
-    video_filter = f"scale=w='trunc(min({int(max_width)},iw)/2)*2':h=-2"
+    side = int(max_width)
+    # Limit the LONGEST side (so portrait phone clips are shrunk too); keep sizes even.
+    video_filter = (
+        f"scale=w='if(gt(iw,ih),trunc(min({side},iw)/2)*2,-2)':"
+        f"h='if(gt(iw,ih),-2,trunc(min({side},ih)/2)*2)'"
+    )
 
     def build_args(with_audio: bool) -> list:
         args = ["-i", source_path, "-map", "0:v:0"]
@@ -198,8 +204,8 @@ def convert_to_browser_mp4(
             "-vf", video_filter,
             "-threads", "2",
             "-c:v", "libx264",
-            "-preset", "veryfast",
-            "-crf", "23",
+            "-preset", "ultrafast",
+            "-crf", "26",
             "-pix_fmt", "yuv420p",
             "-movflags", "+faststart",
             output_path,
@@ -310,6 +316,46 @@ def probe_video(path: str) -> Dict[str, Any]:
 # --------------------------------------------------------------------------
 # Step 1: prepare the uploaded video for the browser
 # --------------------------------------------------------------------------
+def _can_skip_reencode(path: str) -> bool:
+    """
+    True when the upload is already a small, upright H.264 / yuv420p video, so it
+    can simply be copied (a second or two) instead of re-encoded (can take minutes
+    on a small server).
+    """
+    ffprobe = find_ffprobe()
+    if not ffprobe:
+        return False
+    try:
+        completed = subprocess.run(
+            [ffprobe, "-v", "error", "-select_streams", "v:0",
+             "-show_entries",
+             "stream=codec_name,pix_fmt,width,height:stream_tags=rotate:stream_side_data=rotation",
+             "-of", "json", path],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=PROBE_TIMEOUT, check=False,
+        )
+        if completed.returncode != 0:
+            return False
+        streams = json.loads(completed.stdout.decode("utf-8", "replace")).get("streams") or []
+        if not streams:
+            return False
+        stream = streams[0]
+        if stream.get("codec_name") != "h264" or stream.get("pix_fmt") != "yuv420p":
+            return False
+        if max(int(stream.get("width") or 0), int(stream.get("height") or 0)) > MAX_ENCODE_WIDTH:
+            return False
+        rotation = (stream.get("tags") or {}).get("rotate")
+        for item in stream.get("side_data_list") or []:
+            if item.get("rotation"):
+                rotation = item.get("rotation")
+        if rotation not in (None, "", "0", 0):
+            return False
+        return True
+    except Exception as exc:  # noqa: BLE001 - fall back to the normal conversion
+        logger.warning("Quick check of the upload failed: %s", exc)
+        return False
+
+
 def convert_uploaded_video(video_bytes: bytes, filename: str) -> Dict[str, Any]:
     """
     Validate an upload and convert it to a browser-compatible H.264 MP4.
@@ -335,12 +381,27 @@ def convert_uploaded_video(video_bytes: bytes, filename: str) -> Dict[str, Any]:
         with open(source_path, "wb") as handle:
             handle.write(video_bytes)
 
-        convert_to_browser_mp4(
-            source_path, output_path,
-            timeout=SOURCE_CONVERSION_TIMEOUT,
-            max_seconds=MAX_CLIP_SECONDS,
-        )
-        info = probe_video(output_path)
+        copied = False
+        if _can_skip_reencode(source_path):
+            try:
+                _run_ffmpeg(
+                    ["-i", source_path, "-map", "0:v:0", "-an", "-t", str(MAX_CLIP_SECONDS),
+                     "-c:v", "copy", "-movflags", "+faststart", output_path],
+                    60,
+                )
+                info = probe_video(output_path)
+                copied = True
+            except ProcessorError as exc:
+                logger.warning("Quick copy failed (%s); converting instead.", exc)
+                _remove_if_exists(output_path)
+        if not copied:
+            convert_to_browser_mp4(
+                source_path, output_path,
+                timeout=SOURCE_CONVERSION_TIMEOUT,
+                max_seconds=MAX_CLIP_SECONDS,
+                include_audio=False,
+            )
+            info = probe_video(output_path)
 
         with open(output_path, "rb") as handle:
             mp4_bytes = handle.read()
@@ -654,6 +715,15 @@ def analyze_video(video_path: str, stride: int = 2, max_frames: int = 240,
             current_index = frame_index
             frame_index += 1
 
+            longest = max(frame.shape[0], frame.shape[1])
+            if longest > ANALYSIS_MAX_SIDE:
+                shrink = ANALYSIS_MAX_SIDE / float(longest)
+                frame = cv2.resize(
+                    frame,
+                    (max(2, int(round(frame.shape[1] * shrink))),
+                     max(2, int(round(frame.shape[0] * shrink)))),
+                    interpolation=cv2.INTER_AREA,
+                )
             frame_height, frame_width = frame.shape[:2]
             if width <= 0 or height <= 0:
                 width, height = frame_width, frame_height
@@ -768,7 +838,7 @@ def analyze_video(video_path: str, stride: int = 2, max_frames: int = 240,
 
             # Small JPEG copy for the fallback slider (keeps memory low)
             try:
-                if render_overlay:
+                if render_overlay and (video_writer is None or writer_error is not None):
                     thumb = overlay
                     if thumb.shape[1] > MAX_FALLBACK_WIDTH:
                         scale = MAX_FALLBACK_WIDTH / thumb.shape[1]
@@ -806,7 +876,7 @@ def analyze_video(video_path: str, stride: int = 2, max_frames: int = 240,
             })
             pose_3d_frames.append(pose_3d_frame)
             sampled_count += 1
-            if sampled_count % 3 == 0:
+            if sampled_count % 2 == 0:
                 notify(sampled_count)
 
         truncated = sampled_count >= max_frames and (total_frames <= 0 or frame_index < total_frames)
@@ -831,7 +901,7 @@ def analyze_video(video_path: str, stride: int = 2, max_frames: int = 240,
         if not rows:
             raise VideoValidationError("No readable video frames were found in this clip.")
 
-        notify(len(rows), "Encoding the skeleton video...")
+        notify(len(rows), "Almost done: making the skeleton video...")
         data = pd.DataFrame(rows)
         pose_percentage = float(data["pose_detected"].mean() * 100) if len(data) else 0.0
         duration = total_frames / fps if total_frames > 0 else float(data["time_seconds"].iloc[-1])
