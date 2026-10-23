@@ -435,7 +435,7 @@ MAX_JOBS = 3                    # keep memory small on a free server
 def job_store():
     """One shared store for the whole server, so a job outlives the page that started it."""
     # "run" lets only one analysis use the CPU and memory at a time (free servers are small)
-    return {"lock": threading.Lock(), "jobs": {}, "run": threading.Semaphore(1)}
+    return {"lock": threading.Lock(), "jobs": {}, "run": threading.Semaphore(1), "cache": {}}
 
 
 def _prune_jobs(store):
@@ -457,6 +457,7 @@ def get_job(job_id):
 def start_job(source, stride, max_frames, model_complexity):
     """Start the pose analysis in a background thread and return a job id at once."""
     store = job_store()
+    cache_key = (source["key"], int(stride), int(max_frames), int(model_complexity))
     job = {
         "id": uuid.uuid4().hex[:10],
         "created": time.time(),
@@ -470,12 +471,34 @@ def start_job(source, stride, max_frames, model_complexity):
     }
     with store["lock"]:
         store["jobs"][job["id"]] = job
+        cached = store["cache"].get(cache_key)
     _prune_jobs(store)
+
+    if cached is not None:
+        # The same clip with the same settings was analysed a moment ago: reuse it.
+        job["result"] = cached
+        job["state"] = "done"
+        job["done"] = job["total"] = 1
+        return job["id"]
 
     def on_progress(done, total, message=None):
         job["done"] = int(done)
         job["total"] = max(int(total), 1)
-        job["message"] = message or ""
+        if message:
+            job["message"] = message
+            return
+        started = job.get("t_start")
+        if started is None:
+            started = job["t_start"] = time.time()
+        elapsed = time.time() - started
+        if done >= 4 and elapsed > 1.0:
+            left = max(int(round(elapsed / done * (total - done))), 0)
+            job["message"] = (
+                f"Checking your bowling action... {int(done * 100 / max(total, 1))}% "
+                f"(about {left} seconds left)"
+            )
+        else:
+            job["message"] = "Checking your bowling action..."
 
     def work():
         queued = not store["run"].acquire(blocking=False)
@@ -484,6 +507,7 @@ def start_job(source, stride, max_frames, model_complexity):
             store["run"].acquire()
         try:
             job["message"] = "Starting the analysis..."
+            job["t_start"] = time.time()
             result = analyze_video_bytes(
                 source["mp4_bytes"],
                 stride=stride,
@@ -497,6 +521,9 @@ def start_job(source, stride, max_frames, model_complexity):
                 raise ProcessorError("The processor did not return frame-level data.")
             result["video_key"] = source["key"]
             result["filename"] = source["name"]
+            with store["lock"]:
+                store["cache"].clear()          # keep only the latest (memory is small)
+                store["cache"][cache_key] = result
             job["result"] = result
             job["state"] = "done"
         except ProcessorError as error:
@@ -528,7 +555,7 @@ def job_progress(job_id):
         text=job["message"] or f"Analysing your video... {fraction * 100:.0f}%",
     )
     st.info(
-        "Your video is being analysed in the background, usually 1 to 3 minutes. You can "
+        "Your video is being analysed in the background. A short clip usually takes about a minute. You can "
         "keep this page open. If you leave, come back to this same page address later; it "
         "includes your job code, so your results will be waiting (kept for 2 hours)."
     )
@@ -2357,7 +2384,7 @@ with st.expander("⚙ ADVANCED SETTINGS (optional, the defaults are fine)"):
 
 st.caption(
     "Best results: one bowler, camera held still from the side, whole body in view, good "
-    "light. Clips are limited to the first 60 seconds; short clips (5 to 20 seconds) are fastest."
+    "light. Only the first 30 seconds of a clip are used; short clips (5 to 15 seconds) are fastest."
 )
 
 with st.expander("🎥 HOW TO FILM A GOOD CLIP (read this first)"):
@@ -2431,7 +2458,7 @@ if uploaded is not None:
             pass
 
         try:
-            with st.spinner("Converting video to a browser-compatible MP4..."):
+            with st.spinner("Getting your video ready..."):
                 converted = convert_uploaded_video(uploaded.getvalue(), uploaded.name)
             source = {
                 "key": current_key,
