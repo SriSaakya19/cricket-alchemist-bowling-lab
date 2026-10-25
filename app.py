@@ -1043,7 +1043,7 @@ TRACKED_COLUMNS = [
     "knee_angle_deg", "hip_angle_deg",
     "wrist_angle_3d_deg", "elbow_angle_3d_deg", "shoulder_angle_3d_deg",
     "knee_angle_3d_deg", "hip_angle_3d_deg",
-    "view_yaw_deg", "wrist_above_shoulder",
+    "view_yaw_deg", "wrist_above_shoulder", "trunk_lean_deg",
 ]
 
 
@@ -2010,8 +2010,214 @@ def detect_key_moments(df):
     return sorted(moments, key=lambda item: item["time"])
 
 
+# ---------------------------------------------------------------------------
+# Delivery checks for coaches (first version: starter ranges, to be tuned with a coach)
+# ---------------------------------------------------------------------------
+CHECK_STATUS = {
+    "watch": ("COACH TO LOOK", "#E8B54F", "#1A1405"),
+    "ok": ("LOOKS FINE", "#3DDC84", "#06220F"),
+    "unclear": ("CAN'T TELL", "#6F7B93", "#FFFFFF"),
+    "info": ("FOR INFORMATION", "#5CE1E6", "#06222A"),
+    "na": ("NOT MEASURED", "#6F7B93", "#FFFFFF"),
+}
+
+
+def build_delivery_checks(df, view_info, release_time):
+    """
+    Coach-readable checks around the delivery. Each check has a plain finding, why it
+    matters for the bowler's longevity, and a suggested focus for the coach. Ranges are
+    starter values and are meant to be tuned with a coach. These are movement flags
+    from one camera, not injury measurements.
+    """
+    checks = []
+
+    def add(key, title, status, finding, meaning="", fix=""):
+        checks.append({"key": key, "title": title, "status": status,
+                       "finding": finding, "meaning": meaning, "fix": fix})
+
+    side_on = bool(view_info) and view_info["median"] >= 60
+    front_on = bool(view_info) and view_info["median"] < 40
+
+    if df is None or df.empty or release_time is None or "time_seconds" not in df.columns:
+        add("none", "Delivery checks", "unclear",
+            "The release could not be found in this clip, so the delivery checks were skipped.",
+            "Use a clip where the whole bowler is visible through the delivery.", "")
+    else:
+        times = pd.to_numeric(df["time_seconds"], errors="coerce")
+
+        def at(column, moment, half=0.06):
+            if column not in df.columns:
+                return float("nan")
+            mask = (times - moment).abs() <= half
+            values = pd.to_numeric(df.loc[mask, column], errors="coerce").dropna()
+            return float(values.median()) if len(values) else float("nan")
+
+        def window(column, start, end):
+            if column not in df.columns:
+                return pd.Series(dtype=float)
+            mask = (times >= start) & (times <= end)
+            return pd.to_numeric(df.loc[mask, column], errors="coerce").dropna()
+
+        rt = float(release_time)
+
+        # 1. Front knee through release
+        knee_rel = at("knee_angle_deg", rt)
+        knee_before = at("knee_angle_deg", rt - 0.15)
+        title = "Front knee through release"
+        meaning = ("A front leg that stays firm gives the body a stable post to turn over. "
+                   "A knee that keeps folding sends more load up through the hip and lower back, "
+                   "and is a common thing coaches look for.")
+        fix = ("Suggested focus: a firm front-leg landing. A coach might use stiff-leg landing "
+               "drills from standing, then a walk-through, then the full run-up, plus quad and "
+               "glute strength work as advised by a physio or coach.")
+        if not side_on:
+            add("knee", title, "unclear",
+                "Knee bend is only reliable from a side-on view, and this clip is not mostly side-on.",
+                meaning, "Film one more clip from the side to check this.")
+        elif np.isnan(knee_rel):
+            add("knee", title, "unclear", "The knee was not clearly visible at release.", meaning, "")
+        else:
+            drop = knee_before - knee_rel if not np.isnan(knee_before) else float("nan")
+            folding = (not np.isnan(drop)) and drop >= 12
+            low = knee_rel < 135
+            if folding or low:
+                bits = []
+                if folding:
+                    bits.append(f"the knee bent a further {drop:.0f}° in the last 0.15 s before release")
+                if low:
+                    bits.append(f"it is still well bent at release ({knee_rel:.0f}°)")
+                add("knee", title, "watch", "On the measured leg, " + " and ".join(bits) + ".",
+                    meaning + " The app measures whichever leg it sees best, so confirm on the video "
+                    "that this is the front leg.", fix)
+            else:
+                add("knee", title, "ok",
+                    f"On the measured leg the knee is about {knee_rel:.0f}° at release and is not "
+                    "folding further.", meaning + " Confirm on the video that this is the front leg.", "")
+
+        # 2. Trunk lean at release
+        lean = at("trunk_lean_deg", rt)
+        title = "Trunk lean at release"
+        meaning = ("Heavy leaning and twisting of the trunk during delivery, especially sideways, "
+                   "has been linked in research with lower-back stress injuries in fast bowlers. "
+                   "This check only shows the lean, not the twist.")
+        fix = ("Suggested focus: stay tall and in line through the front foot, keep the head steady "
+               "over the front knee, and build core and hip strength. If it repeats across "
+               "deliveries, ask a physio or coach to review the action.")
+        if np.isnan(lean):
+            add("trunk", title, "unclear", "The trunk was not clearly visible at release.", meaning, "")
+        else:
+            if side_on:
+                direction = f"leans {lean:.0f}° away from upright (forward or back)"
+            elif front_on:
+                direction = f"tilts {lean:.0f}° sideways"
+            else:
+                direction = f"is {lean:.0f}° away from upright in this angled view"
+            if lean >= 35:
+                add("trunk", title, "watch", f"At release the trunk {direction}. That is a large lean.",
+                    meaning, fix)
+            else:
+                add("trunk", title, "ok", f"At release the trunk {direction}.", meaning, "")
+
+        # 3. Bowling arm at release (shoulder)
+        arm = at("shoulder_angle_deg", rt)
+        title = "Bowling arm at release (shoulder)"
+        meaning = ("The shoulder takes the most strain at release. An arm that is well below "
+                   "vertical or rushed through can overload it over many deliveries.")
+        fix = ("Suggested focus: a tall gather, the front arm up and pulled down, and shadow "
+               "bowling in front of a mirror. A coach decides what suits this bowler's action.")
+        if np.isnan(arm):
+            add("shoulder", title, "unclear", "The bowling shoulder was not clearly visible at release.",
+                meaning, "")
+        elif arm < 120:
+            add("shoulder", title, "watch",
+                f"The arm sits {arm:.0f}° from the trunk at release, which is well below vertical.",
+                meaning, fix)
+        else:
+            add("shoulder", title, "ok",
+                f"The arm sits {arm:.0f}° from the trunk at release, close to vertical.", meaning, "")
+
+        # 4. Elbow around release (information only)
+        elbow = window("elbow_angle_deg", rt - 0.1, rt + 0.1)
+        if len(elbow) >= 3:
+            add("elbow", "Elbow around release", "info",
+                f"The elbow angle changes by {elbow.max() - elbow.min():.0f}° in the 0.2 s around "
+                "release (2D image).",
+                "Shown for the coach's eye only. One camera cannot judge whether an action is legal.", "")
+
+        # 5. Run-up rhythm
+        title = "Run-up rhythm"
+        meaning = ("A run-up that slows sharply just before the delivery stride loses momentum "
+                   "and often makes the bowler push harder with the body to make up for it.")
+        fix = ("Suggested focus: an even, rhythmic run-up with a fixed stride count and a marker, "
+               "and practising the last three strides at full rhythm.")
+        run = pd.DataFrame({"t": times,
+                            "x": pd.to_numeric(df.get("hip_x"), errors="coerce")}).dropna()
+        run = run[run["t"] < rt - 0.2]
+        if len(run) < 8 or (run["x"].max() - run["x"].min()) < 0.12:
+            add("runup", title, "unclear",
+                "There is not enough run-up in this clip to judge, or the camera followed the bowler.",
+                meaning, "Film the whole run-up from a still camera to check this.")
+        else:
+            speed = (run["x"].diff().abs() / run["t"].diff()).rolling(3, min_periods=1).median().dropna()
+            peak = float(speed.quantile(0.9))
+            tt = run["t"].loc[speed.index]
+            recent = speed[(tt >= rt - 0.5) & (tt <= rt - 0.2)]
+            if peak <= 0 or recent.empty:
+                add("runup", title, "unclear", "The run-up speed could not be worked out.", meaning, "")
+            else:
+                ratio = float(recent.median()) / peak
+                if ratio < 0.5:
+                    add("runup", title, "watch",
+                        f"In the last half second before delivery the bowler is moving at about "
+                        f"{ratio * 100:.0f}% of top run-up speed.", meaning, fix)
+                else:
+                    add("runup", title, "ok",
+                        f"Speed in the last half second before delivery is about {ratio * 100:.0f}% "
+                        "of top run-up speed.", meaning, "")
+
+    add("na", "Not measured by this app", "na",
+        "Ankle loading, stress fractures, ground-reaction force and the force on the shoulder at "
+        "release.",
+        "These need force plates, lab motion capture or medical screening. A single camera cannot "
+        "measure them, so the checks above are movement flags that a coach or physio should follow up, "
+        "not a measure of injury risk.", "")
+    return checks
+
+
+def delivery_checks_html(checks, dark=True):
+    """HTML for the delivery checks (dark on the page, light in the printed coach report)."""
+    esc = html.escape
+    text, muted, line, card = (
+        ("#E9EFFA", "#A3AEC4", "rgba(255,255,255,.12)", "rgba(255,255,255,.04)") if dark
+        else ("#14202e", "#5b6b7c", "#d5dde6", "#f7f9fc")
+    )
+    rows = ""
+    for check in checks:
+        label, bg, fg = CHECK_STATUS.get(check["status"], CHECK_STATUS["unclear"])
+        extra = ""
+        if check.get("meaning"):
+            extra += f'<div style="color:{muted};font-size:.9em;margin-top:6px"><b>Why it matters:</b> {esc(check["meaning"])}</div>'
+        if check.get("fix"):
+            extra += f'<div style="font-size:.9em;margin-top:6px"><b>What to try:</b> {esc(check["fix"])}</div>'
+        rows += (
+            f'<div style="border:1px solid {line};background:{card};border-radius:12px;'
+            f'padding:12px 14px;margin:10px 0;color:{text}">'
+            f'<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between">'
+            f'<b>{esc(check["title"])}</b>'
+            f'<span style="background:{bg};color:{fg};border-radius:999px;padding:2px 10px;'
+            f'font-size:.72em;font-weight:800;letter-spacing:.06em">{label}</span></div>'
+            f'<div style="margin-top:6px">{esc(check["finding"])}</div>{extra}</div>'
+        )
+    intro = (
+        f'<div style="color:{muted};font-size:.9em">First version. The ranges used are starter values '
+        "and should be tuned with a coach. These are movement flags from one camera, not a "
+        "diagnosis or an injury assessment.</div>"
+    )
+    return intro + rows
+
+
 def build_coach_report_html(analysis, df, detection_pct, notes, view_info,
-                            moments, frame_images, release_time):
+                            moments, frame_images, release_time, checks=None):
     """One self-contained, print-friendly HTML report (images and graphs embedded)."""
     esc = html.escape
     angle_pairs = [
@@ -2107,6 +2313,10 @@ def build_coach_report_html(analysis, df, detection_pct, notes, view_info,
         charts_html = "<p>There were not enough visible landmarks to draw graphs.</p>"
 
     notes_html = "".join(f"<li>{esc(n)}</li>" for n in notes)
+    checks_section = (
+        "<h2>Delivery checks (first version)</h2>" + delivery_checks_html(checks, dark=False)
+        if checks else ""
+    )
 
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -2137,6 +2347,8 @@ th {{ background: #f1f4f8; }}
 verified bowling phases. Run-up, delivery stride and foot contact are not detected because
 one camera cannot locate them reliably.</p>
 {moment_html}
+
+{checks_section}
 
 <h2>Joint-angle statistics</h2>
 <table><tr><th rowspan="2">Joint</th><th colspan="4">2D image angle</th>
@@ -2550,7 +2762,7 @@ if analysis is not None:
     ]
     numeric_columns = (
         ["frame", "time_seconds", "visible_landmarks", "view_yaw_deg",
-         "wrist_above_shoulder", "hip_x", "hip_y", "torso_len"]
+         "wrist_above_shoulder", "hip_x", "hip_y", "torso_len", "trunk_lean_deg"]
         + angle_columns
         + angle_3d_columns
     )
@@ -2572,7 +2784,7 @@ if analysis is not None:
 
     df = df[
         ["frame", "time_seconds", "pose_detected", "measured_side", "visible_landmarks",
-         "view_yaw_deg", "wrist_above_shoulder", "hip_x", "hip_y", "torso_len"]
+         "view_yaw_deg", "wrist_above_shoulder", "hip_x", "hip_y", "torso_len", "trunk_lean_deg"]
         + angle_columns
         + angle_3d_columns
     ].reset_index(drop=True)
@@ -2616,6 +2828,10 @@ if analysis is not None:
         df, detection_pct, reliable_pct, break_count, view_info, release_time, key_moments
     )
     report_images = get_report_images(analysis, report_model)
+    try:
+        delivery_checks = build_delivery_checks(df, view_info, release_time)
+    except Exception:  # noqa: BLE001 - the checks are an extra; never block the results
+        delivery_checks = []
     with glance_slot:
         render_player_summary(report_model)
 
@@ -2648,7 +2864,12 @@ if analysis is not None:
 
         # ----- coach report: the detailed numbers for a coach -----
         st.markdown("#### 📋 FOR YOUR COACH: THE COACH REPORT")
-        st.caption("More detail and more technical: key moments, measurements and graphs.")
+        st.caption(
+            "More detail and more technical: delivery checks, key moments, measurements and graphs."
+        )
+        if delivery_checks:
+            with st.expander("🩺 DELIVERY CHECKS FOR THE COACH (mistakes, why they matter, what to try)"):
+                st.markdown(delivery_checks_html(delivery_checks, dark=True), unsafe_allow_html=True)
         if call_stretch(st.button, "📋 CREATE COACH REPORT", key="make_coach_report_top"):
             try:
                 with st.spinner("Building the coach report..."):
@@ -2665,7 +2886,7 @@ if analysis is not None:
                     analysis["report_html"] = build_coach_report_html(
                         analysis, df, detection_pct,
                         build_coaching_notes(df, detection_pct), view_info,
-                        key_moments, coach_images, release_time,
+                        key_moments, coach_images, release_time, delivery_checks,
                     ).encode("utf-8")
             except Exception as error:  # noqa: BLE001 - shown to the user
                 st.error(f"Could not build the coach report: {error}")
@@ -3256,6 +3477,7 @@ below marks the likely release zone.</div>
                 report_text = build_coach_report_html(
                     analysis, df, detection_pct, coaching_notes, view_info,
                     key_moments, frame_images, release_time,
+                    build_delivery_checks(df, view_info, release_time),
                 )
             analysis["report_html"] = report_text.encode("utf-8")
         except Exception as error:  # noqa: BLE001 - shown to the user
