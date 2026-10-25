@@ -562,6 +562,21 @@ def _body_position(landmarks, width: int, height: int):
     return float(hip_x), float(hip_y), torso / max(float(height), 1.0)
 
 
+def _trunk_lean(landmarks, width: int, height: int) -> float:
+    """
+    How far the trunk (mid-hip to mid-shoulder line) leans from vertical in the image,
+    in degrees (always 0 or more). Side-on this is forward or back lean; front-on it is
+    sideways lean. NaN when the trunk landmarks are not clearly visible.
+    """
+    if any(_visibility(landmarks, i) < _VISIBILITY_THRESHOLD for i in (11, 12, 23, 24)):
+        return float("nan")
+    dx = ((landmarks[11].x + landmarks[12].x) - (landmarks[23].x + landmarks[24].x)) / 2.0 * width
+    dy = ((landmarks[11].y + landmarks[12].y) - (landmarks[23].y + landmarks[24].y)) / 2.0 * height
+    if abs(dx) < 1e-9 and abs(dy) < 1e-9:
+        return float("nan")
+    return float(abs(np.degrees(np.arctan2(dx, -dy))))
+
+
 # --------------------------------------------------------------------------
 # OpenCV writer helper
 # --------------------------------------------------------------------------
@@ -749,6 +764,7 @@ def analyze_video(video_path: str, stride: int = 2, max_frames: int = 240,
             view_yaw = float("nan")
             arm_height = float("nan")
             hip_x = hip_y = torso_len = float("nan")
+            trunk_lean = float("nan")
             angles_3d = {
                 "wrist_angle_3d_deg": float("nan"),
                 "elbow_angle_3d_deg": float("nan"),
@@ -790,6 +806,7 @@ def analyze_video(video_path: str, stride: int = 2, max_frames: int = 240,
                     arm_height = _arm_height(landmarks, frame_width, frame_height, side)
                     hip_x, hip_y, torso_len = _body_position(
                         landmarks, frame_width, frame_height)
+                    trunk_lean = _trunk_lean(landmarks, frame_width, frame_height)
                     detected = True
 
                     # Approximate 3D: MediaPipe world landmarks (metres, hip-centred)
@@ -876,6 +893,7 @@ def analyze_video(video_path: str, stride: int = 2, max_frames: int = 240,
                 "hip_x": _round_or_nan(hip_x),
                 "hip_y": _round_or_nan(hip_y),
                 "torso_len": _round_or_nan(torso_len),
+                "trunk_lean_deg": _round_or_nan(trunk_lean),
                 "wrist_angle_deg": _round_or_nan(angles["wrist_angle_deg"]),
                 "elbow_angle_deg": _round_or_nan(angles["elbow_angle_deg"]),
                 "shoulder_angle_deg": _round_or_nan(angles["shoulder_angle_deg"]),
